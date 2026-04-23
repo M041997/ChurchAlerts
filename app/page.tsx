@@ -289,6 +289,20 @@ function AppShell({
   const [panicSending, setPanicSending] = useState(false);
   const [panicError, setPanicError] = useState<string | null>(null);
   const [geoStatus, setGeoStatus] = useState<GeoStatus>("unknown");
+  const [recentPanicAt, setRecentPanicAt] = useState<number | null>(null);
+  const [standDownSending, setStandDownSending] = useState(false);
+
+  useEffect(() => {
+    if (recentPanicAt === null) return;
+    const remaining = 10 * 60 * 1000 - (Date.now() - recentPanicAt);
+    if (remaining <= 0) return;
+    const id = setTimeout(() => setRecentPanicAt(null), remaining);
+    return () => clearTimeout(id);
+  }, [recentPanicAt]);
+
+  // Timer effect above nulls recentPanicAt after 10 minutes, so a non-null
+  // value is always within the stand-down window.
+  const withinStandDown = recentPanicAt !== null;
 
   useEffect(() => {
     if (typeof navigator === "undefined" || !("geolocation" in navigator)) {
@@ -450,7 +464,37 @@ function AppShell({
       setPanicError(error.message);
       return;
     }
+    setRecentPanicAt(Date.now());
     setPanicOpen(false);
+  }
+
+  async function sendStandDown() {
+    if (standDownSending) return;
+    if (
+      typeof window !== "undefined" &&
+      !window.confirm(
+        "Send stand-down? This tells everyone the panic was a false alarm."
+      )
+    ) {
+      return;
+    }
+    setStandDownSending(true);
+    const { error } = await supabase.from("alerts").insert({
+      church_id: churchId,
+      team_slug: null,
+      location: null,
+      latitude: null,
+      longitude: null,
+      message: `STAND DOWN — ${name} is OK, false alarm`,
+      sender_name: name,
+      is_alert: true,
+    });
+    setStandDownSending(false);
+    if (error) {
+      window.alert("Couldn't send stand-down: " + error.message);
+      return;
+    }
+    setRecentPanicAt(null);
   }
 
   const canCycle = joinedTeams.length > 1;
@@ -468,10 +512,13 @@ function AppShell({
   return (
     <div className="flex flex-col gap-4 pb-20">
       <PanicBar
+        mode={withinStandDown ? "standdown" : "panic"}
         onPanic={() => {
           setPanicError(null);
           setPanicOpen(true);
         }}
+        onStandDown={sendStandDown}
+        standDownSending={standDownSending}
       />
       <ProfileStrip
         name={name}
@@ -740,17 +787,41 @@ function TabBar({
   );
 }
 
-function PanicBar({ onPanic }: { onPanic: () => void }) {
+function PanicBar({
+  mode,
+  onPanic,
+  onStandDown,
+  standDownSending,
+}: {
+  mode: "panic" | "standdown";
+  onPanic: () => void;
+  onStandDown: () => void;
+  standDownSending: boolean;
+}) {
   return (
     <div className="sticky top-0 z-10 -mx-6 -mt-6 bg-zinc-950/95 px-6 pt-3 pb-2 backdrop-blur">
-      <button
-        onClick={onPanic}
-        className="flex w-full items-center justify-center gap-2 rounded-md bg-red-700 px-4 py-3 text-sm font-bold uppercase tracking-wide text-white shadow-md shadow-red-900/40 hover:bg-red-600 active:bg-red-800"
-        aria-label="Send panic alert to everyone in the church"
-      >
-        <span className="text-base">🚨</span>
-        <span>Panic — church-wide alert</span>
-      </button>
+      {mode === "standdown" ? (
+        <button
+          onClick={onStandDown}
+          disabled={standDownSending}
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-amber-600 px-4 py-3 text-sm font-bold uppercase tracking-wide text-white shadow-md shadow-amber-900/40 hover:bg-amber-500 active:bg-amber-700 disabled:cursor-not-allowed disabled:opacity-70"
+          aria-label="Cancel panic — false alarm"
+        >
+          <span className="text-base">✋</span>
+          <span>
+            {standDownSending ? "Sending…" : "Stand down — false alarm"}
+          </span>
+        </button>
+      ) : (
+        <button
+          onClick={onPanic}
+          className="flex w-full items-center justify-center gap-2 rounded-md bg-red-700 px-4 py-3 text-sm font-bold uppercase tracking-wide text-white shadow-md shadow-red-900/40 hover:bg-red-600 active:bg-red-800"
+          aria-label="Send panic alert to everyone in the church"
+        >
+          <span className="text-base">🚨</span>
+          <span>Panic — church-wide alert</span>
+        </button>
+      )}
     </div>
   );
 }
@@ -793,7 +864,9 @@ function Chat({
     NotificationPermission | "unsupported"
   >("default");
 
-  const dingRef = useRef<HTMLAudioElement | null>(null);
+  const beepRef = useRef<HTMLAudioElement | null>(null);
+  const sirenRef = useRef<HTMLAudioElement | null>(null);
+  const clearRef = useRef<HTMLAudioElement | null>(null);
   const joinedTeamsRef = useRef(joinedTeams);
   useEffect(() => {
     joinedTeamsRef.current = joinedTeams;
@@ -813,7 +886,9 @@ function Chat({
     if (typeof window === "undefined") return;
     if (!("Notification" in window)) setNotifPermission("unsupported");
     else setNotifPermission(Notification.permission);
-    dingRef.current = new Audio(buildBeepDataUrl());
+    beepRef.current = new Audio(beepUrl());
+    sirenRef.current = new Audio(sirenUrl());
+    clearRef.current = new Audio(allClearUrl());
   }, []);
 
   useEffect(() => {
@@ -872,7 +947,14 @@ function Chat({
               m.team_slug !== null &&
               joinedTeamsRef.current.includes(m.team_slug);
             if (show || isEveryoneAlert || isJoinedTeamAlert) {
-              dingRef.current?.play().catch(() => {});
+              const tone = alertTone(m.message);
+              const audio =
+                tone === "panic"
+                  ? sirenRef.current
+                  : tone === "standdown"
+                    ? clearRef.current
+                    : beepRef.current;
+              audio?.play().catch(() => {});
               if (
                 "Notification" in window &&
                 Notification.permission === "granted"
@@ -1190,16 +1272,25 @@ function MessageBubble({
         {renderMessageBody(m.message)}
       </div>
       {typeof m.latitude === "number" && typeof m.longitude === "number" && (
-        <a
-          href={`https://www.google.com/maps?q=${m.latitude},${m.longitude}`}
-          target="_blank"
-          rel="noreferrer"
-          className={`mt-2 inline-flex items-center gap-1 text-xs font-semibold underline ${
-            m.is_alert ? "text-red-200" : "text-emerald-300"
-          }`}
-        >
-          📍 View sender&apos;s GPS on map ↗
-        </a>
+        <div className="mt-2 flex flex-col gap-1">
+          <iframe
+            src={`https://maps.google.com/maps?q=${m.latitude},${m.longitude}&z=17&output=embed`}
+            className="h-40 w-full rounded-md border border-zinc-700"
+            loading="lazy"
+            title="GPS location"
+            referrerPolicy="no-referrer-when-downgrade"
+          />
+          <a
+            href={`https://www.google.com/maps?q=${m.latitude},${m.longitude}`}
+            target="_blank"
+            rel="noreferrer"
+            className={`text-xs font-semibold underline ${
+              m.is_alert ? "text-red-200" : "text-emerald-300"
+            }`}
+          >
+            Open in Maps ↗
+          </a>
+        </div>
       )}
     </div>
   );
@@ -1290,10 +1381,11 @@ function detectLocationInText(text: string): LocationSlug | null {
   return null;
 }
 
-function buildBeepDataUrl() {
+function buildWavDataUrl(
+  sampleFn: (t: number) => number,
+  duration: number
+): string {
   const sampleRate = 44100;
-  const duration = 0.35;
-  const freq = 880;
   const samples = Math.floor(sampleRate * duration);
   const data = new Uint8Array(44 + samples * 2);
   const view = new DataView(data.buffer);
@@ -1318,8 +1410,7 @@ function buildBeepDataUrl() {
 
   for (let i = 0; i < samples; i++) {
     const t = i / sampleRate;
-    const envelope = Math.min(1, t * 20) * Math.min(1, (duration - t) * 20);
-    const sample = Math.sin(2 * Math.PI * freq * t) * envelope * 0.5;
+    const sample = Math.max(-1, Math.min(1, sampleFn(t)));
     view.setInt16(44 + i * 2, sample * 0x7fff, true);
   }
 
@@ -1330,4 +1421,63 @@ function buildBeepDataUrl() {
       ? btoa(binary)
       : Buffer.from(binary, "binary").toString("base64");
   return `data:audio/wav;base64,${base64}`;
+}
+
+// Short 880Hz blip — routine alerts.
+function buildBeepDataUrl() {
+  const duration = 0.35;
+  return buildWavDataUrl((t) => {
+    const env = Math.min(1, t * 20) * Math.min(1, (duration - t) * 20);
+    return Math.sin(2 * Math.PI * 880 * t) * env * 0.5;
+  }, duration);
+}
+
+// 2s alternating 950/650Hz siren — panic.
+function buildSirenDataUrl() {
+  const duration = 2.0;
+  return buildWavDataUrl((t) => {
+    const cycle = 0.5;
+    const freq = t % cycle < cycle / 2 ? 950 : 650;
+    const env = Math.min(1, t * 6) * Math.min(1, (duration - t) * 6);
+    return Math.sin(2 * Math.PI * freq * t) * env * 0.6;
+  }, duration);
+}
+
+// Two-tone ascending chime (660 → 880) — stand-down / all-clear.
+function buildAllClearDataUrl() {
+  const tone = 0.2;
+  const gap = 0.06;
+  const duration = tone * 2 + gap;
+  return buildWavDataUrl((t) => {
+    if (t < tone) {
+      const env = Math.min(1, t * 20) * Math.min(1, (tone - t) * 20);
+      return Math.sin(2 * Math.PI * 660 * t) * env * 0.5;
+    }
+    if (t > tone + gap && t < duration) {
+      const local = t - tone - gap;
+      const env = Math.min(1, local * 20) * Math.min(1, (tone - local) * 20);
+      return Math.sin(2 * Math.PI * 880 * t) * env * 0.5;
+    }
+    return 0;
+  }, duration);
+}
+
+// Memoize data URLs on the client to avoid re-encoding per Chat mount.
+let _beep: string | null = null;
+let _siren: string | null = null;
+let _allClear: string | null = null;
+function beepUrl() {
+  return (_beep ??= buildBeepDataUrl());
+}
+function sirenUrl() {
+  return (_siren ??= buildSirenDataUrl());
+}
+function allClearUrl() {
+  return (_allClear ??= buildAllClearDataUrl());
+}
+
+function alertTone(message: string): "panic" | "standdown" | "beep" {
+  if (/^PANIC\b/i.test(message)) return "panic";
+  if (/^STAND DOWN\b/i.test(message)) return "standdown";
+  return "beep";
 }
