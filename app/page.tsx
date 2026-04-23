@@ -404,7 +404,13 @@ function AppShell({
   const unreadNext = nextTarget ? unreadTeams.has(nextTarget) : false;
 
   return (
-    <div className="flex flex-col gap-4 pb-32">
+    <div className="flex flex-col gap-4 pb-20">
+      <PanicBar
+        onPanic={() => {
+          setPanicError(null);
+          setPanicOpen(true);
+        }}
+      />
       <ProfileStrip
         name={name}
         churchName={churchName}
@@ -452,16 +458,12 @@ function AppShell({
         />
       )}
 
-      <BottomDock
+      <TabBar
         current={tab}
         onSelect={selectTab}
         mainTeamLabel={
           activeTeam ? teamBySlug(activeTeam).name : "My teams"
         }
-        onPanic={() => {
-          setPanicError(null);
-          setPanicOpen(true);
-        }}
       />
 
       {panicOpen && (
@@ -638,16 +640,14 @@ function OthersList({
   );
 }
 
-function BottomDock({
+function TabBar({
   current,
   onSelect,
   mainTeamLabel,
-  onPanic,
 }: {
   current: Tab;
   onSelect: (t: Tab) => void;
   mainTeamLabel: string;
-  onPanic: () => void;
 }) {
   const tabs: { id: Tab; label: string }[] = [
     { id: "main", label: mainTeamLabel },
@@ -655,18 +655,9 @@ function BottomDock({
     { id: "everyone", label: "Everyone" },
   ];
   return (
-    <div className="fixed inset-x-0 bottom-0 z-20 bg-zinc-950/95 backdrop-blur">
-      <div className="mx-auto max-w-2xl">
-        <button
-          onClick={onPanic}
-          className="flex w-full items-center justify-center gap-2 bg-red-700 px-4 py-3 text-sm font-bold uppercase tracking-wide text-white hover:bg-red-600 active:bg-red-800"
-          aria-label="Send panic alert to everyone in the church"
-        >
-          <span className="text-base">🚨</span>
-          <span>Panic — church-wide alert</span>
-        </button>
-        <nav className="flex border-t border-zinc-800">
-          {tabs.map((t) => {
+    <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-zinc-800 bg-zinc-950/95 backdrop-blur">
+      <div className="mx-auto flex max-w-2xl">
+        {tabs.map((t) => {
           const active = current === t.id;
           return (
             <button
@@ -682,8 +673,22 @@ function BottomDock({
             </button>
           );
         })}
-        </nav>
       </div>
+    </nav>
+  );
+}
+
+function PanicBar({ onPanic }: { onPanic: () => void }) {
+  return (
+    <div className="sticky top-0 z-10 -mx-6 -mt-6 bg-zinc-950/95 px-6 pt-3 pb-2 backdrop-blur">
+      <button
+        onClick={onPanic}
+        className="flex w-full items-center justify-center gap-2 rounded-md bg-red-700 px-4 py-3 text-sm font-bold uppercase tracking-wide text-white shadow-md shadow-red-900/40 hover:bg-red-600 active:bg-red-800"
+        aria-label="Send panic alert to everyone in the church"
+      >
+        <span className="text-base">🚨</span>
+        <span>Panic — church-wide alert</span>
+      </button>
     </div>
   );
 }
