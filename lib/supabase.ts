@@ -10,14 +10,88 @@ export const supabase = createClient(
   anonKey || "placeholder-anon-key"
 );
 
+export const DEMO_JOIN_CODE = "CHURCH1";
+export const NAME_STORAGE_KEY = "church-alert:name";
+export const joinedTeamsKey = (churchId: string) => `church-alert:joined:${churchId}`;
+export const activeTeamKey = (churchId: string) => `church-alert:active:${churchId}`;
+
+export type TeamSlug =
+  | "worship"
+  | "ushers"
+  | "greeters"
+  | "kids"
+  | "youth"
+  | "media"
+  | "security"
+  | "hospitality"
+  | "prayer";
+
+export type Team = { slug: TeamSlug; name: string };
+
+export const TEAMS: Team[] = [
+  { slug: "worship", name: "Worship" },
+  { slug: "ushers", name: "Ushers" },
+  { slug: "greeters", name: "Greeters" },
+  { slug: "kids", name: "Kids" },
+  { slug: "youth", name: "Youth" },
+  { slug: "media", name: "Media / AV" },
+  { slug: "security", name: "Security" },
+  { slug: "hospitality", name: "Hospitality" },
+  { slug: "prayer", name: "Prayer" },
+];
+
+const TEAM_SLUGS = new Set<TeamSlug>(TEAMS.map((t) => t.slug));
+
+export function teamBySlug(slug: TeamSlug): Team {
+  const t = TEAMS.find((x) => x.slug === slug);
+  if (!t) throw new Error(`Unknown team slug: ${slug}`);
+  return t;
+}
+
+export function isTeamSlug(v: unknown): v is TeamSlug {
+  return typeof v === "string" && TEAM_SLUGS.has(v as TeamSlug);
+}
+
+export type LocationSlug =
+  | "main_sanctuary"
+  | "main_sanctuary_entrance"
+  | "kd_ellis_hall"
+  | "kids_sanctuary"
+  | "parking_lot_front"
+  | "parking_lot_back";
+
+export type Location = { slug: LocationSlug; name: string };
+
+export const LOCATIONS: Location[] = [
+  { slug: "main_sanctuary", name: "Main Sanctuary" },
+  { slug: "main_sanctuary_entrance", name: "Main Sanctuary Entrance" },
+  { slug: "kd_ellis_hall", name: "KD Ellis Hall" },
+  { slug: "kids_sanctuary", name: "Kids Sanctuary" },
+  { slug: "parking_lot_front", name: "Parking Lot Front" },
+  { slug: "parking_lot_back", name: "Parking Lot Back" },
+];
+
+const LOCATION_SLUGS = new Set<LocationSlug>(LOCATIONS.map((l) => l.slug));
+
+export function locationBySlug(slug: LocationSlug): Location {
+  const l = LOCATIONS.find((x) => x.slug === slug);
+  if (!l) throw new Error(`Unknown location slug: ${slug}`);
+  return l;
+}
+
+export function isLocationSlug(v: unknown): v is LocationSlug {
+  return typeof v === "string" && LOCATION_SLUGS.has(v as LocationSlug);
+}
+
 export type Message = {
   id: string;
-  group_id: string;
+  church_id: string;
+  team_slug: TeamSlug | null;
+  location: LocationSlug | null;
+  latitude: number | null;
+  longitude: number | null;
   message: string;
   sender_name: string;
   is_alert: boolean;
   created_at: string;
 };
-
-export const DEMO_JOIN_CODE = "CHURCH1";
-export const NAME_STORAGE_KEY = "church-alert:name";
