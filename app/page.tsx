@@ -1116,7 +1116,7 @@ function MessageBubble({
           )}
         </div>
         <div className="text-xs text-zinc-500">
-          {new Date(m.created_at).toLocaleTimeString()}
+          {formatTimestamp(m.created_at)}
         </div>
       </div>
       <div className="mt-1 whitespace-pre-wrap break-words text-base">
@@ -1197,6 +1197,22 @@ function notifBody(text: string): string {
     }
   }
   return out;
+}
+
+function formatTimestamp(iso: string): string {
+  const d = new Date(iso);
+  const now = new Date();
+  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
+  const sameDay = d.toDateString() === now.toDateString();
+  if (sameDay) return time;
+  const yesterday = new Date(now);
+  yesterday.setDate(yesterday.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return `Yesterday · ${time}`;
+  const dateOpts: Intl.DateTimeFormatOptions =
+    d.getFullYear() === now.getFullYear()
+      ? { month: "short", day: "numeric" }
+      : { month: "short", day: "numeric", year: "numeric" };
+  return `${d.toLocaleDateString([], dateOpts)} · ${time}`;
 }
 
 function detectLocationInText(text: string): LocationSlug | null {
