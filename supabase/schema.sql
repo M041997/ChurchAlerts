@@ -52,6 +52,26 @@ alter table public.alerts add column if not exists latitude double precision;
 alter table public.alerts add column if not exists longitude double precision;
 -- GPS coordinates captured at send time (e.g. from panic button). Nullable.
 
+-- Web push subscriptions: one row per (device + user + church).
+create table if not exists public.push_subscriptions (
+  id uuid primary key default gen_random_uuid(),
+  church_id uuid not null references public.churches(id) on delete cascade,
+  sender_name text not null,
+  joined_teams text[] not null default '{}',
+  endpoint text not null unique,
+  p256dh text not null,
+  auth text not null,
+  updated_at timestamptz not null default now(),
+  created_at timestamptz not null default now()
+);
+create index if not exists push_subs_church_idx
+  on public.push_subscriptions (church_id);
+
+alter table public.push_subscriptions enable row level security;
+drop policy if exists "poc_push_subs_rw" on public.push_subscriptions;
+create policy "poc_push_subs_rw" on public.push_subscriptions
+  for all to anon, authenticated using (true) with check (true);
+
 create index if not exists alerts_church_id_created_at_idx
   on public.alerts (church_id, created_at desc);
 create index if not exists alerts_church_team_created_at_idx

@@ -30,6 +30,55 @@ type Tab = "main" | "others" | "everyone";
 type View = { kind: "everyone" } | { kind: "team"; slug: TeamSlug };
 type GeoStatus = "unknown" | "granted" | "denied";
 
+const VAPID_PUBLIC = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY ?? "";
+
+function urlBase64ToUint8Array(base64: string): Uint8Array<ArrayBuffer> {
+  const padding = "=".repeat((4 - (base64.length % 4)) % 4);
+  const b64 = (base64 + padding).replace(/-/g, "+").replace(/_/g, "/");
+  const raw = atob(b64);
+  const buf = new ArrayBuffer(raw.length);
+  const out = new Uint8Array(buf);
+  for (let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
+  return out;
+}
+
+async function setupPushSubscription(
+  churchId: string,
+  senderName: string,
+  joinedTeams: TeamSlug[]
+): Promise<void> {
+  if (typeof window === "undefined") return;
+  if (!("serviceWorker" in navigator) || !("PushManager" in window)) return;
+  if (!VAPID_PUBLIC) return;
+  if (Notification.permission !== "granted") return;
+  try {
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) {
+      sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(VAPID_PUBLIC),
+      });
+    }
+    const json = sub.toJSON();
+    if (!json.endpoint || !json.keys?.p256dh || !json.keys?.auth) return;
+    await supabase.from("push_subscriptions").upsert(
+      {
+        church_id: churchId,
+        sender_name: senderName,
+        joined_teams: joinedTeams,
+        endpoint: json.endpoint,
+        p256dh: json.keys.p256dh,
+        auth: json.keys.auth,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: "endpoint" }
+    );
+  } catch (err) {
+    console.warn("push subscription setup failed:", err);
+  }
+}
+
 async function tryGetPosition(opts: {
   timeoutMs: number;
 }): Promise<{ lat: number; lng: number } | null> {
@@ -254,6 +303,19 @@ function AppShell({
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
     );
   }, []);
+
+  useEffect(() => {
+    if (typeof navigator === "undefined" || !("serviceWorker" in navigator)) {
+      return;
+    }
+    navigator.serviceWorker.register("/sw.js").catch((err) => {
+      console.warn("service worker register failed:", err);
+    });
+  }, []);
+
+  useEffect(() => {
+    setupPushSubscription(churchId, name, joinedTeams);
+  }, [churchId, name, joinedTeams]);
 
   useEffect(() => {
     if (geoStatus !== "granted") return;
