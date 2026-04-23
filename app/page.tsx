@@ -998,6 +998,11 @@ function Chat({
     if (!("Notification" in window)) return;
     const p = await Notification.requestPermission();
     setNotifPermission(p);
+    if (p === "granted") {
+      // Permission was just granted — kick off the push subscription now
+      // rather than waiting for churchId/name/joinedTeams to change.
+      setupPushSubscription(churchId, name, joinedTeams);
+    }
   }
 
   const alertLabel = isEveryone ? "Alert everyone" : "Alert team";
