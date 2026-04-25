@@ -62,21 +62,26 @@ export function teamName(slug: TeamSlug | string): string {
   return t ? t.name : slug;
 }
 
-// Pick the closest known location to (lat, lng). Skips locations without
-// coords. Squared-degree distance is fine — at the small scale of one
-// building the latitude scaling factor is irrelevant for ranking.
+// Pick the closest known location to (lat, lng), but only if it's within
+// `maxMeters` (default 500m). Skips locations without coords. Returns null
+// when the sender is too far from any known location — that prevents an
+// alert from auto-tagging a far-away church location just because it
+// happens to be the least-far one.
 export function nearestLocationTo(
   lat: number,
   lng: number,
-  locations: Location[] = LOCATIONS
+  locations: Location[] = LOCATIONS,
+  maxMeters: number = 500
 ): LocationSlug | null {
-  let best: { slug: LocationSlug; d2: number } | null = null;
+  let best: { slug: LocationSlug; meters: number } | null = null;
+  const cosLat = Math.cos((lat * Math.PI) / 180);
   for (const l of locations) {
     if (l.latitude == null || l.longitude == null) continue;
-    const dLat = l.latitude - lat;
-    const dLng = l.longitude - lng;
-    const d2 = dLat * dLat + dLng * dLng;
-    if (!best || d2 < best.d2) best = { slug: l.slug, d2 };
+    const dLatM = (l.latitude - lat) * 111_000;
+    const dLngM = (l.longitude - lng) * 111_000 * cosLat;
+    const meters = Math.sqrt(dLatM * dLatM + dLngM * dLngM);
+    if (!best || meters < best.meters) best = { slug: l.slug, meters };
   }
-  return best?.slug ?? null;
+  if (!best || best.meters > maxMeters) return null;
+  return best.slug;
 }

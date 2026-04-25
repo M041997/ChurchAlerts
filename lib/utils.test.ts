@@ -125,24 +125,51 @@ describe("formatTimestamp", () => {
 });
 
 describe("nearestLocationTo", () => {
+  // Tight cluster (~110m apart) at Houston-ish latitude so the meters
+  // conversion behaves like in production. With a generous radius the
+  // ranking should still be deterministic.
   const fixture: Location[] = [
-    { slug: "main_sanctuary", name: "Main Sanctuary", latitude: 0, longitude: 0 },
-    { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 1, longitude: 1 },
-    { slug: "kd_ellis_hall", name: "KD Ellis Hall", latitude: -1, longitude: -1 },
+    { slug: "main_sanctuary", name: "Main Sanctuary", latitude: 29.6794, longitude: -95.3940 },
+    { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.6804, longitude: -95.3940 },
+    { slug: "kd_ellis_hall", name: "KD Ellis Hall", latitude: 29.6784, longitude: -95.3940 },
   ];
 
-  it("picks the closest location by squared-degree distance", () => {
-    expect(nearestLocationTo(0.1, 0.1, fixture)).toBe("main_sanctuary");
-    expect(nearestLocationTo(0.9, 0.9, fixture)).toBe("kids_sanctuary");
-    expect(nearestLocationTo(-2, -2, fixture)).toBe("kd_ellis_hall");
+  it("picks the closest location within the radius", () => {
+    expect(nearestLocationTo(29.67945, -95.3940, fixture, 500)).toBe(
+      "main_sanctuary"
+    );
+    expect(nearestLocationTo(29.6803, -95.3940, fixture, 500)).toBe(
+      "kids_sanctuary"
+    );
+    expect(nearestLocationTo(29.6785, -95.3940, fixture, 500)).toBe(
+      "kd_ellis_hall"
+    );
+  });
+
+  it("returns null when sender is far beyond every location's radius", () => {
+    // Baton Rouge is ~400 km from the Houston fixture — must be null
+    // regardless of which location is technically least-far. Regression
+    // for desktop senders whose Wi-Fi/IP geolocation lands hundreds of
+    // miles from the church.
+    expect(nearestLocationTo(30.6447, -91.1794, fixture)).toBe(null);
+    // Same point against the real LOCATIONS array.
+    expect(nearestLocationTo(30.6447, -91.1794)).toBe(null);
+  });
+
+  it("respects the maxMeters bound", () => {
+    // ~1066m north of kids_sanctuary (the nearest fixture point at this lat).
+    expect(nearestLocationTo(29.69, -95.394, fixture, 500)).toBe(null);
+    expect(nearestLocationTo(29.69, -95.394, fixture, 1500)).toBe(
+      "kids_sanctuary"
+    );
   });
 
   it("ignores locations without coords", () => {
     const mixed: Location[] = [
       { slug: "main_sanctuary", name: "Main Sanctuary" }, // no coords
-      { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 5, longitude: 5 },
+      { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.6794, longitude: -95.3940 },
     ];
-    expect(nearestLocationTo(0, 0, mixed)).toBe("kids_sanctuary");
+    expect(nearestLocationTo(29.6794, -95.3940, mixed)).toBe("kids_sanctuary");
   });
 
   it("returns null when no location has coords", () => {
@@ -153,9 +180,7 @@ describe("nearestLocationTo", () => {
     expect(nearestLocationTo(0, 0, noCoords)).toBe(null);
   });
 
-  it("works against the real LOCATIONS array", () => {
-    // Coords from a prior PANIC at the demo church — should snap to one of
-    // the demo locations, all of which are clustered near this point.
+  it("works against the real LOCATIONS array at the church", () => {
     const slug = nearestLocationTo(29.679415, -95.3939551);
     expect(slug).not.toBe(null);
   });
