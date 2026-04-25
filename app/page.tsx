@@ -12,6 +12,7 @@ import {
 import {
   supabase,
   hasSupabaseConfig,
+  CHAT_MUTED_KEY,
   DEMO_JOIN_CODE,
   LAST_KNOWN_POS_KEY,
   NAME_STORAGE_KEY,
@@ -345,6 +346,8 @@ function AppShell({
 
   const [tab, setTab] = useState<Tab>("main");
   const [unreadTeams, setUnreadTeams] = useState<Set<TeamSlug>>(new Set());
+  const rawChatMuted = useLocalStorageValue(CHAT_MUTED_KEY);
+  const chatMuted = rawChatMuted === "1";
   const [panicOpen, setPanicOpen] = useState(false);
   const [panicSending, setPanicSending] = useState(false);
   const [panicError, setPanicError] = useState<string | null>(null);
@@ -432,6 +435,9 @@ function AppShell({
   const joinedTeamsRef = useRef(joinedTeams);
   const activeTeamRef = useRef(activeTeam);
   const tabRef = useRef(tab);
+  const chatMutedRef = useRef(chatMuted);
+  const nameRef = useRef(name);
+  const chatPingRef = useRef<HTMLAudioElement | null>(null);
   useEffect(() => {
     joinedTeamsRef.current = joinedTeams;
   }, [joinedTeams]);
@@ -441,6 +447,15 @@ function AppShell({
   useEffect(() => {
     tabRef.current = tab;
   }, [tab]);
+  useEffect(() => {
+    chatMutedRef.current = chatMuted;
+  }, [chatMuted]);
+  useEffect(() => {
+    nameRef.current = name;
+  }, [name]);
+  useEffect(() => {
+    chatPingRef.current = new Audio(chatPingUrl());
+  }, []);
 
   useEffect(() => {
     const channel = supabase
@@ -455,6 +470,26 @@ function AppShell({
         },
         (payload) => {
           const m = payload.new as Message;
+          const isOwn = m.sender_name === nameRef.current;
+
+          // Soft chat ping for non-alert messages, anywhere in the church
+          // (joined teams or church-wide), unless from self, currently
+          // viewed, or muted. Alerts have their own siren in Chat.
+          if (!m.is_alert && !isOwn && !chatMutedRef.current) {
+            const slugForPing = m.team_slug;
+            const viewingThis =
+              slugForPing === null
+                ? tabRef.current === "everyone"
+                : tabRef.current === "main" &&
+                  activeTeamRef.current === slugForPing;
+            const audibleScope =
+              slugForPing === null ||
+              joinedTeamsRef.current.includes(slugForPing);
+            if (audibleScope && !viewingThis) {
+              chatPingRef.current?.play().catch(() => {});
+            }
+          }
+
           if (!m.team_slug) return;
           const slug = m.team_slug;
           if (!joinedTeamsRef.current.includes(slug)) return;
@@ -611,6 +646,10 @@ function AppShell({
       <ProfileStrip
         name={name}
         churchName={churchName}
+        chatMuted={chatMuted}
+        onToggleMute={() =>
+          writeLocalStorage(CHAT_MUTED_KEY, chatMuted ? null : "1")
+        }
         onChangeName={onChangeName}
         onChangeChurch={onChangeChurch}
       />
@@ -790,11 +829,15 @@ function GeoEnableBanner({
 function ProfileStrip({
   name,
   churchName,
+  chatMuted,
+  onToggleMute,
   onChangeName,
   onChangeChurch,
 }: {
   name: string;
   churchName: string;
+  chatMuted: boolean;
+  onToggleMute: () => void;
   onChangeName: () => void;
   onChangeChurch: () => void;
 }) {
@@ -806,6 +849,23 @@ function ProfileStrip({
         <span className="font-semibold">{name}</span>
       </div>
       <div className="flex gap-1">
+        <button
+          onClick={onToggleMute}
+          aria-pressed={chatMuted}
+          aria-label={chatMuted ? "Unmute chat sounds" : "Mute chat sounds"}
+          title={
+            chatMuted
+              ? "Chat sounds muted (alerts still play)"
+              : "Mute chat sounds"
+          }
+          className={`rounded-md border px-2 py-1 text-xs ${
+            chatMuted
+              ? "border-yellow-700 bg-yellow-900/30 text-yellow-200"
+              : "border-zinc-800 text-zinc-400 hover:bg-zinc-800"
+          }`}
+        >
+          {chatMuted ? "🔕" : "🔔"}
+        </button>
         <button
           onClick={onChangeName}
           className="rounded-md border border-zinc-800 px-2 py-1 text-xs text-zinc-400 hover:bg-zinc-800"
@@ -1569,10 +1629,21 @@ function buildAllClearDataUrl() {
   }, duration);
 }
 
+// Soft 0.12s 540Hz tap — incoming chat messages (much quieter than the
+// 880Hz alert beep so it's clearly distinct from an emergency).
+function buildChatPingDataUrl() {
+  const duration = 0.12;
+  return buildWavDataUrl((t) => {
+    const env = Math.min(1, t * 40) * Math.min(1, (duration - t) * 40);
+    return Math.sin(2 * Math.PI * 540 * t) * env * 0.18;
+  }, duration);
+}
+
 // Memoize data URLs on the client to avoid re-encoding per Chat mount.
 let _beep: string | null = null;
 let _siren: string | null = null;
 let _allClear: string | null = null;
+let _chatPing: string | null = null;
 function beepUrl() {
   return (_beep ??= buildBeepDataUrl());
 }
@@ -1581,5 +1652,8 @@ function sirenUrl() {
 }
 function allClearUrl() {
   return (_allClear ??= buildAllClearDataUrl());
+}
+function chatPingUrl() {
+  return (_chatPing ??= buildChatPingDataUrl());
 }
 
