@@ -369,12 +369,35 @@ function AppShell({
       return;
     }
     navigator.geolocation.getCurrentPosition(
-      () => setGeoStatus("granted"),
+      (pos) => {
+        setGeoStatus("granted");
+        saveLastKnownPos(pos.coords.latitude, pos.coords.longitude);
+      },
       (err) =>
         setGeoStatus(
           err && err.code === err.PERMISSION_DENIED ? "denied" : "unknown"
         ),
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 }
+    );
+  }, []);
+
+  // Explicit request — must be wired to a user gesture. iOS Safari often
+  // ignores or silently denies on-mount geolocation calls; tapping a button
+  // is the reliable path to a permission prompt and a first cached fix.
+  const requestGeo = useCallback(() => {
+    if (typeof navigator === "undefined" || !("geolocation" in navigator)) {
+      return;
+    }
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGeoStatus("granted");
+        saveLastKnownPos(pos.coords.latitude, pos.coords.longitude);
+      },
+      (err) =>
+        setGeoStatus(
+          err && err.code === err.PERMISSION_DENIED ? "denied" : "unknown"
+        ),
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
     );
   }, []);
 
@@ -591,6 +614,7 @@ function AppShell({
         onChangeName={onChangeName}
         onChangeChurch={onChangeChurch}
       />
+      <GeoEnableBanner geoStatus={geoStatus} onEnable={requestGeo} />
 
       {tab === "main" &&
         (activeTeam ? (
@@ -714,6 +738,51 @@ function PanicConfirmModal({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+function GeoEnableBanner({
+  geoStatus,
+  onEnable,
+}: {
+  geoStatus: GeoStatus;
+  onEnable: () => void;
+}) {
+  if (geoStatus === "granted") return null;
+  if (geoStatus === "unknown") {
+    return (
+      <button
+        onClick={onEnable}
+        className="rounded-md border border-emerald-700 bg-emerald-900/30 px-4 py-2 text-left text-sm text-emerald-100 hover:bg-emerald-900/50"
+      >
+        <div className="font-semibold">📍 Enable location for accurate alerts</div>
+        <div className="text-xs text-emerald-200/80">
+          Tap to share your GPS so PANIC alerts include your exact location.
+        </div>
+      </button>
+    );
+  }
+  return (
+    <div className="rounded-md border border-yellow-800 bg-yellow-900/30 p-3 text-xs text-yellow-100">
+      <div className="text-sm font-semibold">📍 Location is blocked</div>
+      <div className="mt-1 text-yellow-200/90">
+        Your alerts won&apos;t include your location. To fix on iPhone:
+      </div>
+      <ol className="mt-2 list-decimal space-y-0.5 pl-5 text-yellow-200/90">
+        <li>Settings → Privacy &amp; Security → Location Services → ON</li>
+        <li>Same screen → Safari Websites → &ldquo;While Using the App&rdquo;</li>
+        <li>
+          In Safari: tap &ldquo;AA&rdquo; in the URL bar → Website Settings → Location → Allow
+        </li>
+        <li>Close and reopen this page, then try again</li>
+      </ol>
+      <button
+        onClick={onEnable}
+        className="mt-2 rounded border border-yellow-600 bg-yellow-900/40 px-2 py-1 text-xs font-semibold text-yellow-100 hover:bg-yellow-900/60"
+      >
+        Try again
+      </button>
     </div>
   );
 }
