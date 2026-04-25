@@ -1468,19 +1468,8 @@ function MessageBubble({
   const channelLabel =
     m.team_slug === null ? "Everyone" : teamBySlug(m.team_slug).name;
   const crossChannel = showChannelTag && m.team_slug === null;
-
-  // Prefer the surveyed location's coords over the sender's raw lat/lng for
-  // map + directions. Desktop senders often have wildly inaccurate Wi-Fi/IP
-  // geolocation (e.g. an ISP hop hundreds of miles away), and the auto-tagged
-  // location is by definition within ~500m of where they actually were.
-  const tagged = m.location
-    ? LOCATIONS.find((l) => l.slug === m.location)
-    : null;
-  const displayLat =
-    tagged?.latitude != null ? tagged.latitude : m.latitude;
-  const displayLng =
-    tagged?.longitude != null ? tagged.longitude : m.longitude;
-  const hasMap = typeof displayLat === "number" && typeof displayLng === "number";
+  const hasMap =
+    typeof m.latitude === "number" && typeof m.longitude === "number";
 
   return (
     <div
@@ -1514,7 +1503,7 @@ function MessageBubble({
       {hasMap && (
         <div className="mt-2 flex flex-col gap-1">
           <iframe
-            src={`https://maps.google.com/maps?q=${displayLat},${displayLng}&z=17&output=embed`}
+            src={`https://maps.google.com/maps?q=${m.latitude},${m.longitude}&z=17&output=embed`}
             className="h-40 w-full rounded-md border border-zinc-700"
             loading="lazy"
             title="GPS location"
@@ -1522,7 +1511,7 @@ function MessageBubble({
           />
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs font-semibold">
             <a
-              href={`https://www.google.com/maps/dir/?api=1&destination=${displayLat},${displayLng}`}
+              href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
               target="_blank"
               rel="noreferrer"
               className={`underline ${m.is_alert ? "text-red-200" : "text-emerald-300"}`}
@@ -1530,7 +1519,7 @@ function MessageBubble({
               Directions in Google Maps ↗
             </a>
             <a
-              href={`https://maps.apple.com/?daddr=${displayLat},${displayLng}&dirflg=d`}
+              href={`https://maps.apple.com/?daddr=${m.latitude},${m.longitude}&dirflg=d`}
               target="_blank"
               rel="noreferrer"
               className={`underline ${m.is_alert ? "text-red-200" : "text-emerald-300"}`}
