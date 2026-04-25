@@ -1419,16 +1419,24 @@ function MessageBubble({
             title="GPS location"
             referrerPolicy="no-referrer-when-downgrade"
           />
-          <a
-            href={`https://www.google.com/maps?q=${m.latitude},${m.longitude}`}
-            target="_blank"
-            rel="noreferrer"
-            className={`text-xs font-semibold underline ${
-              m.is_alert ? "text-red-200" : "text-emerald-300"
-            }`}
-          >
-            Open in Maps ↗
-          </a>
+          <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs font-semibold">
+            <a
+              href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
+              target="_blank"
+              rel="noreferrer"
+              className={`underline ${m.is_alert ? "text-red-200" : "text-emerald-300"}`}
+            >
+              Directions in Google Maps ↗
+            </a>
+            <a
+              href={`https://maps.apple.com/?daddr=${m.latitude},${m.longitude}&dirflg=d`}
+              target="_blank"
+              rel="noreferrer"
+              className={`underline ${m.is_alert ? "text-red-200" : "text-emerald-300"}`}
+            >
+              Directions in Apple Maps ↗
+            </a>
+          </div>
         </div>
       )}
     </div>
