@@ -1,5 +1,6 @@
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
+import { expandLocationTags, teamName } from "@/lib/utils";
 
 export const runtime = "nodejs";
 
@@ -12,18 +13,6 @@ const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 if (VAPID_PUBLIC && VAPID_PRIVATE && VAPID_SUBJECT) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
 }
-
-const TEAM_NAMES: Record<string, string> = {
-  worship: "Worship",
-  ushers: "Ushers",
-  greeters: "Greeters",
-  kids: "Kids",
-  youth: "Youth",
-  media: "Media / AV",
-  security: "Security",
-  hospitality: "Hospitality",
-  prayer: "Prayer",
-};
 
 type AlertRow = {
   id: string;
@@ -88,9 +77,7 @@ export async function POST(request: Request) {
   }
 
   const isPanic = alert.team_slug === null && alert.is_alert;
-  const channel = alert.team_slug
-    ? TEAM_NAMES[alert.team_slug] ?? alert.team_slug
-    : "Everyone";
+  const channel = alert.team_slug ? teamName(alert.team_slug) : "Everyone";
   const title = `🚨 ${alert.sender_name} · ${channel}`;
   const pushBody = buildNotifBody(alert);
 
@@ -135,33 +122,9 @@ export async function POST(request: Request) {
 }
 
 function buildNotifBody(alert: AlertRow): string {
-  let text = alert.message;
-  // Transform @Kids Wing → 📍 Kids Wing in the push body.
-  if (alert.location) {
-    const name = locationName(alert.location);
-    if (name) {
-      const re = new RegExp(`@${escapeRegex(name)}`, "gi");
-      text = text.replace(re, `📍 ${name}`);
-    }
-  }
+  let text = expandLocationTags(alert.message);
   if (alert.latitude != null && alert.longitude != null) {
     text += ` · GPS attached`;
   }
   return text;
-}
-
-function locationName(slug: string): string | null {
-  const map: Record<string, string> = {
-    main_sanctuary: "Main Sanctuary",
-    main_sanctuary_entrance: "Main Sanctuary Entrance",
-    kd_ellis_hall: "KD Ellis Hall",
-    kids_sanctuary: "Kids Sanctuary",
-    parking_lot_front: "Parking Lot Front",
-    parking_lot_back: "Parking Lot Back",
-  };
-  return map[slug] ?? null;
-}
-
-function escapeRegex(s: string): string {
-  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

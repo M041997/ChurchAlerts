@@ -13,6 +13,7 @@ import {
   supabase,
   hasSupabaseConfig,
   DEMO_JOIN_CODE,
+  LAST_KNOWN_POS_KEY,
   NAME_STORAGE_KEY,
   TEAMS,
   LOCATIONS,
@@ -25,6 +26,13 @@ import {
   type TeamSlug,
   type LocationSlug,
 } from "@/lib/supabase";
+import {
+  alertTone,
+  detectLocationInText,
+  expandLocationTags,
+  formatTimestamp,
+  nearestLocationTo,
+} from "@/lib/utils";
 
 type Tab = "main" | "others" | "everyone";
 type View = { kind: "everyone" } | { kind: "team"; slug: TeamSlug };
@@ -79,6 +87,31 @@ async function setupPushSubscription(
   }
 }
 
+type StoredPos = { lat: number; lng: number; ts: number };
+
+function saveLastKnownPos(lat: number, lng: number) {
+  if (typeof window === "undefined") return;
+  try {
+    const payload: StoredPos = { lat, lng, ts: Date.now() };
+    localStorage.setItem(LAST_KNOWN_POS_KEY, JSON.stringify(payload));
+  } catch {}
+}
+
+function loadLastKnownPos(): { lat: number; lng: number } | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(LAST_KNOWN_POS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<StoredPos>;
+    if (typeof parsed.lat !== "number" || typeof parsed.lng !== "number") {
+      return null;
+    }
+    return { lat: parsed.lat, lng: parsed.lng };
+  } catch {
+    return null;
+  }
+}
+
 async function tryGetPosition(opts: {
   timeoutMs: number;
 }): Promise<{ lat: number; lng: number } | null> {
@@ -93,10 +126,37 @@ async function tryGetPosition(opts: {
         maximumAge: 60000,
       });
     });
+    saveLastKnownPos(pos.coords.latitude, pos.coords.longitude);
     return { lat: pos.coords.latitude, lng: pos.coords.longitude };
   } catch {
     return null;
   }
+}
+
+// Best-effort: prefer fresh GPS, fall back to last-known cached coords so an
+// alert always carries *some* location even if fresh GPS times out or
+// permission is currently blocked.
+async function getPositionWithFallback(opts: {
+  timeoutMs: number;
+}): Promise<{ lat: number; lng: number } | null> {
+  const fresh = await tryGetPosition(opts);
+  return fresh ?? loadLastKnownPos();
+}
+
+// Append " @<NearestLocationName>" to a message if no location is already
+// tagged and we can resolve a nearest predefined location from coords.
+// Renders as a 📍 pill in chat and surfaces in push/notification bodies.
+function withNearestLocationTag(
+  message: string,
+  coords: { lat: number; lng: number } | null
+): { message: string; locationSlug: LocationSlug | null } {
+  const existing = detectLocationInText(message);
+  if (existing) return { message, locationSlug: existing };
+  if (!coords) return { message, locationSlug: null };
+  const nearest = nearestLocationTo(coords.lat, coords.lng);
+  if (!nearest) return { message, locationSlug: null };
+  const name = locationBySlug(nearest).name;
+  return { message: `${message} @${name}`, locationSlug: nearest };
 }
 
 const lsSubscribe = (cb: () => void) => {
@@ -338,7 +398,7 @@ function AppShell({
     }
     const id = setInterval(() => {
       navigator.geolocation.getCurrentPosition(
-        () => {},
+        (pos) => saveLastKnownPos(pos.coords.latitude, pos.coords.longitude),
         () => {},
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
       );
@@ -446,15 +506,20 @@ function AppShell({
     setPanicError(null);
 
     // 5s is enough when the cache is warm; panic shouldn't hang on a cold GPS.
-    const coords = await tryGetPosition({ timeoutMs: 5000 });
+    // Falls back to last-known coords if fresh GPS is unavailable.
+    const coords = await getPositionWithFallback({ timeoutMs: 5000 });
+    const { message, locationSlug } = withNearestLocationTag(
+      "PANIC — emergency help needed",
+      coords
+    );
 
     const { error } = await supabase.from("alerts").insert({
       church_id: churchId,
       team_slug: null,
-      location: null,
+      location: locationSlug,
       latitude: coords?.lat ?? null,
       longitude: coords?.lng ?? null,
-      message: "PANIC — emergency help needed",
+      message,
       sender_name: name,
       is_alert: true,
     });
@@ -963,7 +1028,7 @@ function Chat({
                   ? "Everyone"
                   : teamBySlug(m.team_slug as TeamSlug).name;
                 new Notification(`🚨 ${m.sender_name} · ${label}`, {
-                  body: notifBody(m.message),
+                  body: expandLocationTags(m.message),
                 });
               }
             }
@@ -1033,20 +1098,25 @@ function Chat({
     setError(null);
 
     // Only alerts carry GPS; regular chat messages don't need it.
-    // Short timeout since AppShell keeps the position cache warm.
+    // Short timeout since AppShell keeps the position cache warm; falls back
+    // to last-known so an alert always carries some location.
     const coords = asAlert
-      ? await tryGetPosition({ timeoutMs: 3000 })
+      ? await getPositionWithFallback({ timeoutMs: 3000 })
       : null;
+
+    const { message: outMessage, locationSlug } = asAlert
+      ? withNearestLocationTag(trimmed, coords)
+      : { message: trimmed, locationSlug: detectLocationInText(trimmed) };
 
     const { data, error } = await supabase
       .from("alerts")
       .insert({
         church_id: churchId,
         team_slug: teamSlug,
-        location: detectLocationInText(trimmed),
+        location: locationSlug,
         latitude: coords?.lat ?? null,
         longitude: coords?.lng ?? null,
-        message: trimmed,
+        message: outMessage,
         sender_name: name,
         is_alert: asAlert,
       })
@@ -1341,46 +1411,6 @@ function renderMessageBody(text: string): ReactNode[] {
   return out;
 }
 
-function notifBody(text: string): string {
-  let out = text;
-  for (const l of LOCATIONS) {
-    const needle = `@${l.name}`;
-    const lowerNeedle = needle.toLowerCase();
-    let lower = out.toLowerCase();
-    let idx = lower.indexOf(lowerNeedle);
-    while (idx !== -1) {
-      out = out.slice(0, idx) + `📍 ${l.name}` + out.slice(idx + needle.length);
-      lower = out.toLowerCase();
-      idx = lower.indexOf(lowerNeedle, idx + 1);
-    }
-  }
-  return out;
-}
-
-function formatTimestamp(iso: string): string {
-  const d = new Date(iso);
-  const now = new Date();
-  const time = d.toLocaleTimeString([], { hour: "numeric", minute: "2-digit" });
-  const sameDay = d.toDateString() === now.toDateString();
-  if (sameDay) return time;
-  const yesterday = new Date(now);
-  yesterday.setDate(yesterday.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return `Yesterday · ${time}`;
-  const dateOpts: Intl.DateTimeFormatOptions =
-    d.getFullYear() === now.getFullYear()
-      ? { month: "short", day: "numeric" }
-      : { month: "short", day: "numeric", year: "numeric" };
-  return `${d.toLocaleDateString([], dateOpts)} · ${time}`;
-}
-
-function detectLocationInText(text: string): LocationSlug | null {
-  const lower = text.toLowerCase();
-  for (const l of LOCATIONS) {
-    if (lower.includes(`@${l.name.toLowerCase()}`)) return l.slug;
-  }
-  return null;
-}
-
 function buildWavDataUrl(
   sampleFn: (t: number) => number,
   duration: number
@@ -1476,8 +1506,3 @@ function allClearUrl() {
   return (_allClear ??= buildAllClearDataUrl());
 }
 
-function alertTone(message: string): "panic" | "standdown" | "beep" {
-  if (/^PANIC\b/i.test(message)) return "panic";
-  if (/^STAND DOWN\b/i.test(message)) return "standdown";
-  return "beep";
-}

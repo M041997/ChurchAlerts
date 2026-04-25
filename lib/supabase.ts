@@ -12,6 +12,7 @@ export const supabase = createClient(
 
 export const DEMO_JOIN_CODE = "CHURCH1";
 export const NAME_STORAGE_KEY = "church-alert:name";
+export const LAST_KNOWN_POS_KEY = "church-alert:lastKnownPos";
 export const joinedTeamsKey = (churchId: string) => `church-alert:joined:${churchId}`;
 export const activeTeamKey = (churchId: string) => `church-alert:active:${churchId}`;
 
@@ -60,15 +61,23 @@ export type LocationSlug =
   | "parking_lot_front"
   | "parking_lot_back";
 
-export type Location = { slug: LocationSlug; name: string };
+export type Location = {
+  slug: LocationSlug;
+  name: string;
+  // Optional anchor coords. Used to pick the nearest location when an alert
+  // includes GPS but no explicit @-tag. Placeholder values for the demo
+  // church — survey and replace with real points before scaling.
+  latitude?: number;
+  longitude?: number;
+};
 
 export const LOCATIONS: Location[] = [
-  { slug: "main_sanctuary", name: "Main Sanctuary" },
-  { slug: "main_sanctuary_entrance", name: "Main Sanctuary Entrance" },
-  { slug: "kd_ellis_hall", name: "KD Ellis Hall" },
-  { slug: "kids_sanctuary", name: "Kids Sanctuary" },
-  { slug: "parking_lot_front", name: "Parking Lot Front" },
-  { slug: "parking_lot_back", name: "Parking Lot Back" },
+  { slug: "main_sanctuary", name: "Main Sanctuary", latitude: 29.6794, longitude: -95.3940 },
+  { slug: "main_sanctuary_entrance", name: "Main Sanctuary Entrance", latitude: 29.67945, longitude: -95.39395 },
+  { slug: "kd_ellis_hall", name: "KD Ellis Hall", latitude: 29.6793, longitude: -95.39405 },
+  { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.67945, longitude: -95.39415 },
+  { slug: "parking_lot_front", name: "Parking Lot Front", latitude: 29.6796, longitude: -95.3940 },
+  { slug: "parking_lot_back", name: "Parking Lot Back", latitude: 29.6792, longitude: -95.3940 },
 ];
 
 const LOCATION_SLUGS = new Set<LocationSlug>(LOCATIONS.map((l) => l.slug));
