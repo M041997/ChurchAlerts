@@ -14,6 +14,8 @@ import {
   hasSupabaseConfig,
   CHAT_MUTED_KEY,
   DEMO_JOIN_CODE,
+  JOINED_CHURCH_KEY,
+  JOIN_TTL_MS,
   LAST_KNOWN_POS_KEY,
   NAME_STORAGE_KEY,
   TEAMS,
@@ -172,6 +174,37 @@ function writeLocalStorage(key: string, value: string | null) {
   window.dispatchEvent(new StorageEvent("storage", { key }));
 }
 
+type StoredChurch = { id: string; name: string; joinedAt: number };
+
+function parseStoredChurch(
+  raw: string
+): { id: string; name: string } | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw) as Partial<StoredChurch>;
+    if (
+      typeof parsed.id !== "string" ||
+      typeof parsed.name !== "string" ||
+      typeof parsed.joinedAt !== "number"
+    ) {
+      return null;
+    }
+    if (Date.now() - parsed.joinedAt > JOIN_TTL_MS) return null;
+    return { id: parsed.id, name: parsed.name };
+  } catch {
+    return null;
+  }
+}
+
+function saveJoinedChurch(id: string, name: string) {
+  const payload: StoredChurch = { id, name, joinedAt: Date.now() };
+  writeLocalStorage(JOINED_CHURCH_KEY, JSON.stringify(payload));
+}
+
+function clearJoinedChurch() {
+  writeLocalStorage(JOINED_CHURCH_KEY, null);
+}
+
 function useLocalStorageValue(key: string | null): string | null {
   const getSnapshot = useCallback(() => {
     if (!key) return "";
@@ -212,36 +245,27 @@ function ConfigWarning() {
 
 function App() {
   const name = useLocalStorageValue(NAME_STORAGE_KEY);
-  const [churchId, setChurchId] = useState<string | null>(null);
-  const [churchName, setChurchName] = useState<string>("");
+  const rawChurch = useLocalStorageValue(JOINED_CHURCH_KEY);
 
-  if (name === null) return null;
+  if (name === null || rawChurch === null) return null;
 
   if (!name) {
     return <NameGate onSet={(n) => writeLocalStorage(NAME_STORAGE_KEY, n)} />;
   }
 
-  if (!churchId) {
-    return (
-      <JoinChurchGate
-        onJoined={(id, cname) => {
-          setChurchId(id);
-          setChurchName(cname);
-        }}
-      />
-    );
+  const stored = parseStoredChurch(rawChurch);
+
+  if (!stored) {
+    return <JoinChurchGate onJoined={saveJoinedChurch} />;
   }
 
   return (
     <AppShell
       name={name}
-      churchId={churchId}
-      churchName={churchName}
+      churchId={stored.id}
+      churchName={stored.name}
       onChangeName={() => writeLocalStorage(NAME_STORAGE_KEY, null)}
-      onChangeChurch={() => {
-        setChurchId(null);
-        setChurchName("");
-      }}
+      onChangeChurch={clearJoinedChurch}
     />
   );
 }
@@ -1419,7 +1443,10 @@ function Chat({
         {error && <div className="text-sm text-red-400">{error}</div>}
       </div>
 
-      <div className="flex flex-col gap-2">
+      <div
+        className="flex max-h-[60vh] flex-col gap-2 overflow-y-auto overscroll-contain pr-1"
+        style={{ WebkitOverflowScrolling: "touch" }}
+      >
         {messages.length === 0 && (
           <div className="text-sm text-zinc-600">No messages yet.</div>
         )}
@@ -1441,6 +1468,20 @@ function MessageBubble({
   const channelLabel =
     m.team_slug === null ? "Everyone" : teamBySlug(m.team_slug).name;
   const crossChannel = showChannelTag && m.team_slug === null;
+
+  // Prefer the surveyed location's coords over the sender's raw lat/lng for
+  // map + directions. Desktop senders often have wildly inaccurate Wi-Fi/IP
+  // geolocation (e.g. an ISP hop hundreds of miles away), and the auto-tagged
+  // location is by definition within ~500m of where they actually were.
+  const tagged = m.location
+    ? LOCATIONS.find((l) => l.slug === m.location)
+    : null;
+  const displayLat =
+    tagged?.latitude != null ? tagged.latitude : m.latitude;
+  const displayLng =
+    tagged?.longitude != null ? tagged.longitude : m.longitude;
+  const hasMap = typeof displayLat === "number" && typeof displayLng === "number";
+
   return (
     <div
       className={`rounded-md border p-3 ${
@@ -1470,10 +1511,10 @@ function MessageBubble({
       <div className="mt-1 whitespace-pre-wrap break-words text-base">
         {renderMessageBody(m.message)}
       </div>
-      {typeof m.latitude === "number" && typeof m.longitude === "number" && (
+      {hasMap && (
         <div className="mt-2 flex flex-col gap-1">
           <iframe
-            src={`https://maps.google.com/maps?q=${m.latitude},${m.longitude}&z=17&output=embed`}
+            src={`https://maps.google.com/maps?q=${displayLat},${displayLng}&z=17&output=embed`}
             className="h-40 w-full rounded-md border border-zinc-700"
             loading="lazy"
             title="GPS location"
@@ -1481,7 +1522,7 @@ function MessageBubble({
           />
           <div className="flex flex-wrap gap-x-3 gap-y-1 text-xs font-semibold">
             <a
-              href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
+              href={`https://www.google.com/maps/dir/?api=1&destination=${displayLat},${displayLng}`}
               target="_blank"
               rel="noreferrer"
               className={`underline ${m.is_alert ? "text-red-200" : "text-emerald-300"}`}
@@ -1489,7 +1530,7 @@ function MessageBubble({
               Directions in Google Maps ↗
             </a>
             <a
-              href={`https://maps.apple.com/?daddr=${m.latitude},${m.longitude}&dirflg=d`}
+              href={`https://maps.apple.com/?daddr=${displayLat},${displayLng}&dirflg=d`}
               target="_blank"
               rel="noreferrer"
               className={`underline ${m.is_alert ? "text-red-200" : "text-emerald-300"}`}

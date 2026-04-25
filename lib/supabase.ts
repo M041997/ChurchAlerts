@@ -14,6 +14,8 @@ export const DEMO_JOIN_CODE = "CHURCH1";
 export const NAME_STORAGE_KEY = "church-alert:name";
 export const LAST_KNOWN_POS_KEY = "church-alert:lastKnownPos";
 export const CHAT_MUTED_KEY = "church-alert:chatMuted";
+export const JOINED_CHURCH_KEY = "church-alert:joinedChurch";
+export const JOIN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const joinedTeamsKey = (churchId: string) => `church-alert:joined:${churchId}`;
 export const activeTeamKey = (churchId: string) => `church-alert:active:${churchId}`;
 
