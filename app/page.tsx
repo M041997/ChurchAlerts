@@ -90,12 +90,16 @@ async function setupPushSubscription(
   }
 }
 
-type StoredPos = { lat: number; lng: number; ts: number };
+type StoredPos = { lat: number; lng: number; accuracy: number; ts: number };
 
-function saveLastKnownPos(lat: number, lng: number) {
+// Don't trust a cached fix older than this for the panic fallback — better
+// to ship null than coords from a previous location.
+const FALLBACK_MAX_AGE_MS = 5 * 60 * 1000;
+
+function saveLastKnownPos(lat: number, lng: number, accuracy: number) {
   if (typeof window === "undefined") return;
   try {
-    const payload: StoredPos = { lat, lng, ts: Date.now() };
+    const payload: StoredPos = { lat, lng, accuracy, ts: Date.now() };
     localStorage.setItem(LAST_KNOWN_POS_KEY, JSON.stringify(payload));
   } catch {}
 }
@@ -109,12 +113,21 @@ function loadLastKnownPos(): { lat: number; lng: number } | null {
     if (typeof parsed.lat !== "number" || typeof parsed.lng !== "number") {
       return null;
     }
+    if (
+      typeof parsed.ts !== "number" ||
+      Date.now() - parsed.ts > FALLBACK_MAX_AGE_MS
+    ) {
+      return null;
+    }
     return { lat: parsed.lat, lng: parsed.lng };
   } catch {
     return null;
   }
 }
 
+// maximumAge: 0 forces iOS Safari to wait for a fresh fix instead of
+// returning a stale Wi-Fi-derived position from a previous lookup. The
+// 60s default served Safari a stale fix that was 24km off in testing.
 async function tryGetPosition(opts: {
   timeoutMs: number;
 }): Promise<{ lat: number; lng: number } | null> {
@@ -126,10 +139,14 @@ async function tryGetPosition(opts: {
       navigator.geolocation.getCurrentPosition(resolve, reject, {
         enableHighAccuracy: true,
         timeout: opts.timeoutMs,
-        maximumAge: 60000,
+        maximumAge: 0,
       });
     });
-    saveLastKnownPos(pos.coords.latitude, pos.coords.longitude);
+    saveLastKnownPos(
+      pos.coords.latitude,
+      pos.coords.longitude,
+      pos.coords.accuracy
+    );
     return { lat: pos.coords.latitude, lng: pos.coords.longitude };
   } catch {
     return null;
@@ -398,7 +415,11 @@ function AppShell({
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setGeoStatus("granted");
-        saveLastKnownPos(pos.coords.latitude, pos.coords.longitude);
+        saveLastKnownPos(
+          pos.coords.latitude,
+          pos.coords.longitude,
+          pos.coords.accuracy
+        );
       },
       (err) =>
         setGeoStatus(
@@ -418,7 +439,11 @@ function AppShell({
     navigator.geolocation.getCurrentPosition(
       (pos) => {
         setGeoStatus("granted");
-        saveLastKnownPos(pos.coords.latitude, pos.coords.longitude);
+        saveLastKnownPos(
+          pos.coords.latitude,
+          pos.coords.longitude,
+          pos.coords.accuracy
+        );
       },
       (err) =>
         setGeoStatus(
@@ -448,7 +473,12 @@ function AppShell({
     }
     const id = setInterval(() => {
       navigator.geolocation.getCurrentPosition(
-        (pos) => saveLastKnownPos(pos.coords.latitude, pos.coords.longitude),
+        (pos) =>
+          saveLastKnownPos(
+            pos.coords.latitude,
+            pos.coords.longitude,
+            pos.coords.accuracy
+          ),
         () => {},
         { enableHighAccuracy: true, timeout: 10000, maximumAge: 30000 }
       );
@@ -587,9 +617,10 @@ function AppShell({
     setPanicSending(true);
     setPanicError(null);
 
-    // 5s is enough when the cache is warm; panic shouldn't hang on a cold GPS.
-    // Falls back to last-known coords if fresh GPS is unavailable.
-    const coords = await getPositionWithFallback({ timeoutMs: 5000 });
+    // iOS Safari needs ~8-15s indoors to acquire a high-accuracy GPS lock.
+    // Anything less and Safari serves a stale or Wi-Fi-derived position.
+    // Last-known fallback only kicks in if even 10s isn't enough.
+    const coords = await getPositionWithFallback({ timeoutMs: 10000 });
     const { message, locationSlug } = withNearestLocationTag(
       "PANIC — emergency help needed",
       coords
@@ -1250,11 +1281,11 @@ function Chat({
     setSending(true);
     setError(null);
 
-    // Only alerts carry GPS; regular chat messages don't need it.
-    // Short timeout since AppShell keeps the position cache warm; falls back
-    // to last-known so an alert always carries some location.
+    // Only alerts carry GPS; regular chat messages don't need it. Match the
+    // panic timeout so iOS Safari has time to acquire a real GPS fix
+    // instead of returning a stale Wi-Fi-derived position.
     const coords = asAlert
-      ? await getPositionWithFallback({ timeoutMs: 3000 })
+      ? await getPositionWithFallback({ timeoutMs: 10000 })
       : null;
 
     const { message: outMessage, locationSlug } = asAlert
