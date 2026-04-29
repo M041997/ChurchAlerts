@@ -52,6 +52,11 @@ alter table public.alerts add column if not exists latitude double precision;
 alter table public.alerts add column if not exists longitude double precision;
 -- GPS coordinates captured at send time (e.g. from panic button). Nullable.
 
+alter table public.alerts add column if not exists sender_id uuid;
+-- Auth user who sent the alert. Nullable for legacy rows. New inserts on
+-- the auth-first branch require sender_id = auth.uid() via RLS. The FK
+-- constraint to public.profiles is added after profiles is defined below.
+
 -- Web push subscriptions: one row per (device + user + church).
 create table if not exists public.push_subscriptions (
   id uuid primary key default gen_random_uuid(),
@@ -104,13 +109,21 @@ drop policy if exists "poc_churches_select" on public.churches;
 create policy "poc_churches_select" on public.churches
   for select to anon, authenticated using (true);
 
+-- alerts: only members of the church can read or write. The old open
+-- PoC policies (poc_alerts_*) are dropped explicitly for cutover. The
+-- /legacy CHURCH1 chat depends on open RLS and stops working after this
+-- migration is applied — that's expected on the auth-first branch.
 drop policy if exists "poc_alerts_select" on public.alerts;
-create policy "poc_alerts_select" on public.alerts
-  for select to anon, authenticated using (true);
-
 drop policy if exists "poc_alerts_insert" on public.alerts;
-create policy "poc_alerts_insert" on public.alerts
-  for insert to anon, authenticated with check (true);
+
+drop policy if exists "alerts_member_select" on public.alerts;
+create policy "alerts_member_select" on public.alerts
+  for select to authenticated using (public.is_member_of(church_id));
+
+drop policy if exists "alerts_member_insert" on public.alerts;
+create policy "alerts_member_insert" on public.alerts
+  for insert to authenticated
+  with check (public.is_member_of(church_id) and sender_id = auth.uid());
 
 -- ============================================================
 -- Auth + invites (feat/auth-and-invites)
@@ -122,6 +135,18 @@ create table if not exists public.profiles (
   display_name text not null,
   created_at timestamptz not null default now()
 );
+
+-- Now that profiles exists, link alerts.sender_id to it.
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint where conname = 'alerts_sender_id_fkey'
+  ) then
+    alter table public.alerts
+      add constraint alerts_sender_id_fkey
+      foreign key (sender_id) references public.profiles(id) on delete set null;
+  end if;
+end $$;
 
 create table if not exists public.church_members (
   user_id uuid not null references public.profiles(id) on delete cascade,

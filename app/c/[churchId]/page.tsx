@@ -18,7 +18,7 @@ type Message = {
 type Church = { id: string; name: string };
 type LoadState =
   | { kind: "loading" }
-  | { kind: "ready"; church: Church; displayName: string }
+  | { kind: "ready"; church: Church; displayName: string; userId: string }
   | { kind: "error"; message: string };
 
 export default function ChurchChatPage() {
@@ -78,13 +78,13 @@ export default function ChurchChatPage() {
         .from("alerts")
         .select("id, church_id, message, sender_name, is_alert, created_at")
         .eq("church_id", churchId)
-        .order("created_at", { ascending: true })
+        .order("created_at", { ascending: false })
         .limit(200)
         .returns<Message[]>();
       if (cancelled) return;
 
       setMessages(existing ?? []);
-      setState({ kind: "ready", church, displayName });
+      setState({ kind: "ready", church, displayName, userId: userData.user.id });
     })();
 
     return () => {
@@ -107,7 +107,7 @@ export default function ChurchChatPage() {
         (payload) => {
           const row = payload.new as Message;
           setMessages((prev) =>
-            prev.some((m) => m.id === row.id) ? prev : [...prev, row]
+            prev.some((m) => m.id === row.id) ? prev : [row, ...prev]
           );
         }
       )
@@ -120,7 +120,7 @@ export default function ChurchChatPage() {
   useEffect(() => {
     const el = scrollerRef.current;
     if (!el) return;
-    el.scrollTop = el.scrollHeight;
+    el.scrollTop = 0;
   }, [messages.length]);
 
   const handleSend = useCallback(
@@ -135,6 +135,7 @@ export default function ChurchChatPage() {
           church_id: churchId,
           message: text,
           sender_name: state.displayName,
+          sender_id: state.userId,
           is_alert: false,
         });
         if (error) throw error;
