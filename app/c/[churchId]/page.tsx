@@ -4,8 +4,20 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { alertTone, formatTimestamp, getQuickPosition } from "@/lib/utils";
+import {
+  alertTone,
+  formatTimestamp,
+  getQuickPosition,
+  primeGeolocation,
+} from "@/lib/utils";
 import { allClearUrl, chatPingUrl, play, sirenUrl } from "@/lib/audio";
+import {
+  enableNotifications,
+  fanoutPush,
+  pushSupportInitial,
+  registerServiceWorker,
+  type PushSupport,
+} from "@/lib/push";
 
 type Message = {
   id: string;
@@ -34,7 +46,14 @@ export default function ChurchChatPage() {
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [panicSending, setPanicSending] = useState(false);
+  const [push, setPush] = useState<PushSupport>("default");
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setPush(pushSupportInitial());
+    registerServiceWorker();
+    primeGeolocation();
+  }, []);
 
   useEffect(() => {
     if (!churchId) return;
@@ -183,17 +202,27 @@ export default function ChurchChatPage() {
       setPanicSending(true);
       try {
         const coords =
-          kind === "panic" ? await getQuickPosition(3000) : null;
-        const { error } = await supabase.from("alerts").insert({
-          church_id: churchId,
-          message,
-          sender_name: state.displayName,
-          sender_id: state.userId,
-          is_alert: true,
-          latitude: coords?.latitude ?? null,
-          longitude: coords?.longitude ?? null,
-        });
-        if (error) window.alert(`Could not send: ${error.message}`);
+          kind === "panic" ? await getQuickPosition(5000, 5 * 60_000) : null;
+        const { data: inserted, error } = await supabase
+          .from("alerts")
+          .insert({
+            church_id: churchId,
+            message,
+            sender_name: state.displayName,
+            sender_id: state.userId,
+            is_alert: true,
+            latitude: coords?.latitude ?? null,
+            longitude: coords?.longitude ?? null,
+          })
+          .select(
+            "id, church_id, message, sender_name, sender_id, is_alert, latitude, longitude, team_slug, location, created_at"
+          )
+          .single();
+        if (error) {
+          window.alert(`Could not send: ${error.message}`);
+          return;
+        }
+        if (inserted) fanoutPush(inserted as Record<string, unknown>);
       } finally {
         setPanicSending(false);
       }
@@ -249,6 +278,28 @@ export default function ChurchChatPage() {
           Stand down
         </button>
       </div>
+
+      {push === "default" && (
+        <button
+          type="button"
+          onClick={async () => {
+            const next = await enableNotifications({
+              churchId,
+              userId: state.userId,
+              senderName: state.displayName,
+            });
+            setPush(next);
+          }}
+          className="border-b border-gray-200 px-4 py-2 text-left text-sm text-red-700 underline"
+        >
+          🔔 Enable push notifications for this church
+        </button>
+      )}
+      {push === "denied" && (
+        <p className="border-b border-gray-200 px-4 py-2 text-xs text-gray-500">
+          Notifications blocked. You&apos;ll still hear the in-app siren.
+        </p>
+      )}
 
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-3">
         {messages.length === 0 ? (

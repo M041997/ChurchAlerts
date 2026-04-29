@@ -72,10 +72,24 @@ create table if not exists public.push_subscriptions (
 create index if not exists push_subs_church_idx
   on public.push_subscriptions (church_id);
 
+alter table public.push_subscriptions
+  add column if not exists user_id uuid;
+-- Auth user owning this subscription. Nullable for legacy rows; new rows
+-- on the auth-first branch require user_id = auth.uid() via RLS. The FK
+-- to public.profiles is added below once profiles exists.
+
+create index if not exists push_subs_user_idx
+  on public.push_subscriptions (user_id);
+
 alter table public.push_subscriptions enable row level security;
+
+-- Drop the open PoC policy and replace with auth-aware ones.
 drop policy if exists "poc_push_subs_rw" on public.push_subscriptions;
-create policy "poc_push_subs_rw" on public.push_subscriptions
-  for all to anon, authenticated using (true) with check (true);
+drop policy if exists "push_subs_self_rw" on public.push_subscriptions;
+create policy "push_subs_self_rw" on public.push_subscriptions
+  for all to authenticated
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid() and public.is_member_of(church_id));
 
 create index if not exists alerts_church_id_created_at_idx
   on public.alerts (church_id, created_at desc);
@@ -136,7 +150,7 @@ create table if not exists public.profiles (
   created_at timestamptz not null default now()
 );
 
--- Now that profiles exists, link alerts.sender_id to it.
+-- Now that profiles exists, link alerts.sender_id and push_subscriptions.user_id to it.
 do $$
 begin
   if not exists (
@@ -145,6 +159,13 @@ begin
     alter table public.alerts
       add constraint alerts_sender_id_fkey
       foreign key (sender_id) references public.profiles(id) on delete set null;
+  end if;
+  if not exists (
+    select 1 from pg_constraint where conname = 'push_subs_user_id_fkey'
+  ) then
+    alter table public.push_subscriptions
+      add constraint push_subs_user_id_fkey
+      foreign key (user_id) references public.profiles(id) on delete cascade;
   end if;
 end $$;
 

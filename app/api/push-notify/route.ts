@@ -8,7 +8,11 @@ const VAPID_PUBLIC = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Service role key bypasses RLS — required to read every push_subscription
+// for the church when fanning out a notification.
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (VAPID_PUBLIC && VAPID_PRIVATE && VAPID_SUBJECT) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
@@ -23,6 +27,7 @@ type AlertRow = {
   longitude: number | null;
   message: string;
   sender_name: string;
+  sender_id: string | null;
   is_alert: boolean;
   created_at: string;
 };
@@ -56,12 +61,17 @@ export async function POST(request: Request) {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  // Find subscriptions to notify: same church, excluding sender, filtered by team membership.
+  // Find subscriptions to notify: same church, excluding sender by user_id
+  // (more robust than name), filtered by team membership.
   let query = supabase
     .from("push_subscriptions")
-    .select("endpoint, p256dh, auth, sender_name, joined_teams")
-    .eq("church_id", alert.church_id)
-    .neq("sender_name", alert.sender_name);
+    .select("endpoint, p256dh, auth, sender_name, joined_teams, user_id")
+    .eq("church_id", alert.church_id);
+  if (alert.sender_id) {
+    query = query.neq("user_id", alert.sender_id);
+  } else {
+    query = query.neq("sender_name", alert.sender_name);
+  }
 
   if (alert.team_slug) {
     query = query.contains("joined_teams", [alert.team_slug]);

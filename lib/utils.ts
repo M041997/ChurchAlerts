@@ -56,7 +56,8 @@ export function expandLocationTags(text: string): string {
 // Panic buttons can't wait — better to ship the alert without coords than
 // to hang the UI for 30s waiting on a slow fix.
 export async function getQuickPosition(
-  timeoutMs = 3000
+  timeoutMs = 5000,
+  maxCacheAgeMs = 60_000
 ): Promise<{ latitude: number; longitude: number } | null> {
   if (typeof navigator === "undefined" || !navigator.geolocation) return null;
   return new Promise((resolve) => {
@@ -79,9 +80,24 @@ export async function getQuickPosition(
         clearTimeout(timer);
         finish(null);
       },
-      { enableHighAccuracy: true, timeout: timeoutMs - 100, maximumAge: 0 }
+      {
+        enableHighAccuracy: true,
+        timeout: Math.max(500, timeoutMs - 100),
+        maximumAge: maxCacheAgeMs,
+      }
     );
   });
+}
+
+// Background-warm the browser's geolocation cache so the next
+// getQuickPosition() call has a recent fix sitting in maximumAge.
+export function primeGeolocation(): void {
+  if (typeof navigator === "undefined" || !navigator.geolocation) return;
+  navigator.geolocation.getCurrentPosition(
+    () => {},
+    () => {},
+    { enableHighAccuracy: true, timeout: 10_000, maximumAge: 60_000 }
+  );
 }
 
 export function alertTone(message: string): "panic" | "standdown" | "beep" {
