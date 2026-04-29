@@ -32,10 +32,16 @@ function SignupForm() {
       if (signUpError) throw signUpError;
       if (!data.user) throw new Error("Signup did not return a user");
 
-      const { error: profileError } = await supabase
+      // Defense-in-depth: the on-auth.users trigger creates the profile
+      // SECURITY DEFINER so it always wins, but if for some reason it
+      // didn't fire we upsert here too. Errors are non-fatal — the
+      // trigger covers any missing row.
+      await supabase
         .from("profiles")
-        .insert({ id: data.user.id, display_name: trimmed });
-      if (profileError) throw profileError;
+        .upsert(
+          { id: data.user.id, display_name: trimmed },
+          { onConflict: "id" }
+        );
 
       router.replace(invite ? `/join/${encodeURIComponent(invite)}` : "/home");
     } catch (err) {

@@ -423,3 +423,52 @@ end;
 $$;
 
 grant execute on function public.redeem_invite(text) to authenticated;
+
+-- ============================================================
+-- 8. Auto-create a profile row when a new auth user signs up.
+-- The client-side /signup page's profile insert can race with session
+-- propagation or be blocked by RLS while a confirmation email is
+-- pending; the trigger runs in SECURITY DEFINER context so it always
+-- wins. Idempotent via on-conflict.
+-- ============================================================
+
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  insert into public.profiles (id, display_name)
+  values (
+    new.id,
+    coalesce(
+      nullif(trim(new.raw_user_meta_data->>'display_name'), ''),
+      split_part(new.email, '@', 1),
+      'User'
+    )
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+drop trigger if exists on_auth_user_created on auth.users;
+create trigger on_auth_user_created
+  after insert on auth.users
+  for each row
+  execute function public.handle_new_user();
+
+-- One-time backfill: every existing auth.users row without a profile
+-- gets one. Safe to re-run.
+insert into public.profiles (id, display_name)
+select
+  u.id,
+  coalesce(
+    nullif(trim(u.raw_user_meta_data->>'display_name'), ''),
+    split_part(u.email, '@', 1),
+    'User'
+  )
+from auth.users u
+left join public.profiles p on p.id = u.id
+where p.id is null;
