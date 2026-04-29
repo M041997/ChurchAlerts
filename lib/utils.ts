@@ -51,6 +51,39 @@ export function expandLocationTags(text: string): string {
   return out;
 }
 
+// Capture a current GPS fix with a hard deadline. Resolves to null if the
+// browser refuses, the user denies, or the satellite lock takes too long.
+// Panic buttons can't wait — better to ship the alert without coords than
+// to hang the UI for 30s waiting on a slow fix.
+export async function getQuickPosition(
+  timeoutMs = 3000
+): Promise<{ latitude: number; longitude: number } | null> {
+  if (typeof navigator === "undefined" || !navigator.geolocation) return null;
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (value: { latitude: number; longitude: number } | null) => {
+      if (done) return;
+      done = true;
+      resolve(value);
+    };
+    const timer = setTimeout(() => finish(null), timeoutMs);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        clearTimeout(timer);
+        finish({
+          latitude: pos.coords.latitude,
+          longitude: pos.coords.longitude,
+        });
+      },
+      () => {
+        clearTimeout(timer);
+        finish(null);
+      },
+      { enableHighAccuracy: true, timeout: timeoutMs - 100, maximumAge: 0 }
+    );
+  });
+}
+
 export function alertTone(message: string): "panic" | "standdown" | "beep" {
   if (/^PANIC\b/i.test(message)) return "panic";
   if (/^STAND DOWN\b/i.test(message)) return "standdown";

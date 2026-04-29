@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { alertTone, formatTimestamp } from "@/lib/utils";
+import { alertTone, formatTimestamp, getQuickPosition } from "@/lib/utils";
 import { allClearUrl, chatPingUrl, play, sirenUrl } from "@/lib/audio";
 
 type Message = {
@@ -14,6 +14,8 @@ type Message = {
   sender_name: string;
   sender_id: string | null;
   is_alert: boolean;
+  latitude: number | null;
+  longitude: number | null;
   created_at: string;
 };
 
@@ -79,7 +81,9 @@ export default function ChurchChatPage() {
 
       const { data: existing } = await supabase
         .from("alerts")
-        .select("id, church_id, message, sender_name, sender_id, is_alert, created_at")
+        .select(
+          "id, church_id, message, sender_name, sender_id, is_alert, latitude, longitude, created_at"
+        )
         .eq("church_id", churchId)
         .order("created_at", { ascending: false })
         .limit(200)
@@ -178,12 +182,16 @@ export default function ChurchChatPage() {
         return;
       setPanicSending(true);
       try {
+        const coords =
+          kind === "panic" ? await getQuickPosition(3000) : null;
         const { error } = await supabase.from("alerts").insert({
           church_id: churchId,
           message,
           sender_name: state.displayName,
           sender_id: state.userId,
           is_alert: true,
+          latitude: coords?.latitude ?? null,
+          longitude: coords?.longitude ?? null,
         });
         if (error) window.alert(`Could not send: ${error.message}`);
       } finally {
@@ -276,6 +284,16 @@ export default function ChurchChatPage() {
                   >
                     {m.message}
                   </p>
+                  {m.latitude != null && m.longitude != null && (
+                    <a
+                      href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 self-start text-xs text-red-700 underline"
+                    >
+                      📍 View on map
+                    </a>
+                  )}
                 </li>
               );
             })}
