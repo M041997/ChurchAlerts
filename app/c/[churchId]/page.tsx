@@ -3,9 +3,17 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
-import { supabase } from "@/lib/supabase";
+import {
+  supabase,
+  TEAMS,
+  LOCATIONS,
+  isTeamSlug,
+  type TeamSlug,
+  type LocationSlug,
+} from "@/lib/supabase";
 import {
   alertTone,
+  detectLocationInText,
   formatTimestamp,
   getQuickPosition,
   primeGeolocation,
@@ -26,10 +34,14 @@ type Message = {
   sender_name: string;
   sender_id: string | null;
   is_alert: boolean;
+  team_slug: TeamSlug | null;
+  location: LocationSlug | null;
   latitude: number | null;
   longitude: number | null;
   created_at: string;
 };
+
+type Channel = "everyone" | TeamSlug;
 
 type Church = { id: string; name: string };
 type LoadState =
@@ -47,6 +59,7 @@ export default function ChurchChatPage() {
   const [sending, setSending] = useState(false);
   const [panicSending, setPanicSending] = useState(false);
   const [push, setPush] = useState<PushSupport>("default");
+  const [channel, setChannel] = useState<Channel>("everyone");
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -101,7 +114,7 @@ export default function ChurchChatPage() {
       const { data: existing } = await supabase
         .from("alerts")
         .select(
-          "id, church_id, message, sender_name, sender_id, is_alert, latitude, longitude, created_at"
+          "id, church_id, message, sender_name, sender_id, is_alert, team_slug, location, latitude, longitude, created_at"
         )
         .eq("church_id", churchId)
         .order("created_at", { ascending: false })
@@ -168,12 +181,17 @@ export default function ChurchChatPage() {
       if (!text) return;
       setSending(true);
       try {
+        const teamSlug: TeamSlug | null =
+          channel === "everyone" ? null : channel;
+        const location = detectLocationInText(text);
         const { error } = await supabase.from("alerts").insert({
           church_id: churchId,
           message: text,
           sender_name: state.displayName,
           sender_id: state.userId,
           is_alert: false,
+          team_slug: teamSlug,
+          location,
         });
         if (error) throw error;
         setDraft("");
@@ -181,7 +199,7 @@ export default function ChurchChatPage() {
         setSending(false);
       }
     },
-    [draft, churchId, state]
+    [draft, churchId, state, channel]
   );
 
   const handlePanic = useCallback(
@@ -301,55 +319,105 @@ export default function ChurchChatPage() {
         </p>
       )}
 
+      <nav className="flex gap-2 overflow-x-auto border-b border-gray-200 px-4 py-2">
+        <ChannelChip
+          active={channel === "everyone"}
+          onClick={() => setChannel("everyone")}
+          label="Everyone"
+        />
+        {TEAMS.map((t) => (
+          <ChannelChip
+            key={t.slug}
+            active={channel === t.slug}
+            onClick={() => setChannel(t.slug)}
+            label={t.name}
+          />
+        ))}
+      </nav>
+
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-3">
-        {messages.length === 0 ? (
-          <p className="py-8 text-center text-sm text-gray-400">
-            No messages yet. Say something.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {messages.map((m) => {
-              const tone = m.is_alert ? alertTone(m.message) : null;
-              const alertClass =
-                tone === "panic"
-                  ? "rounded border border-red-300 bg-red-50 p-2"
-                  : tone === "standdown"
-                    ? "rounded border border-emerald-300 bg-emerald-50 p-2"
-                    : "";
-              return (
-                <li key={m.id} className={`flex flex-col ${alertClass}`}>
-                  <div className="flex items-baseline gap-2">
-                    <span className="text-sm font-medium">{m.sender_name}</span>
-                    <span className="text-xs text-gray-400">
-                      {formatTimestamp(m.created_at)}
-                    </span>
-                  </div>
-                  <p
-                    className={
-                      tone === "panic"
-                        ? "text-sm font-semibold text-red-800"
-                        : tone === "standdown"
-                          ? "text-sm font-semibold text-emerald-800"
-                          : "text-sm"
-                    }
-                  >
-                    {m.message}
-                  </p>
-                  {m.latitude != null && m.longitude != null && (
-                    <a
-                      href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="mt-1 self-start text-xs text-red-700 underline"
+        {(() => {
+          // Panic/standdown alerts always show across every channel so a
+          // member who happens to be on a team tab doesn't miss an
+          // emergency. Plain chat messages stick to their channel.
+          const visible = messages.filter((m) =>
+            m.is_alert
+              ? true
+              : channel === "everyone"
+                ? m.team_slug === null
+                : m.team_slug === channel
+          );
+          if (visible.length === 0) {
+            return (
+              <p className="py-8 text-center text-sm text-gray-400">
+                No messages here yet. Say something.
+              </p>
+            );
+          }
+          return (
+            <ul className="flex flex-col gap-2">
+              {visible.map((m) => {
+                const tone = m.is_alert ? alertTone(m.message) : null;
+                const alertClass =
+                  tone === "panic"
+                    ? "rounded border border-red-300 bg-red-50 p-2"
+                    : tone === "standdown"
+                      ? "rounded border border-emerald-300 bg-emerald-50 p-2"
+                      : "";
+                const teamLabel =
+                  m.team_slug && isTeamSlug(m.team_slug)
+                    ? TEAMS.find((t) => t.slug === m.team_slug)?.name
+                    : null;
+                const locationLabel = m.location
+                  ? LOCATIONS.find((l) => l.slug === m.location)?.name
+                  : null;
+                return (
+                  <li key={m.id} className={`flex flex-col ${alertClass}`}>
+                    <div className="flex flex-wrap items-baseline gap-x-2 gap-y-0.5">
+                      <span className="text-sm font-medium">
+                        {m.sender_name}
+                      </span>
+                      {teamLabel && (
+                        <span className="text-xs text-gray-500">
+                          · {teamLabel}
+                        </span>
+                      )}
+                      {locationLabel && (
+                        <span className="text-xs text-gray-500">
+                          · 📍 {locationLabel}
+                        </span>
+                      )}
+                      <span className="text-xs text-gray-400">
+                        {formatTimestamp(m.created_at)}
+                      </span>
+                    </div>
+                    <p
+                      className={
+                        tone === "panic"
+                          ? "text-sm font-semibold text-red-800"
+                          : tone === "standdown"
+                            ? "text-sm font-semibold text-emerald-800"
+                            : "text-sm"
+                      }
                     >
-                      📍 View on map
-                    </a>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        )}
+                      {m.message}
+                    </p>
+                    {m.latitude != null && m.longitude != null && (
+                      <a
+                        href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="mt-1 self-start text-xs text-red-700 underline"
+                      >
+                        📍 View on map
+                      </a>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          );
+        })()}
       </div>
 
       <form
@@ -359,7 +427,11 @@ export default function ChurchChatPage() {
         <input
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
-          placeholder="Message…"
+          placeholder={`Message #${
+            channel === "everyone"
+              ? "everyone"
+              : TEAMS.find((t) => t.slug === channel)?.name ?? channel
+          }… (try @${LOCATIONS[0].name})`}
           className="flex-1 rounded border border-gray-300 px-3 py-2 text-base"
           autoFocus
         />
@@ -372,5 +444,29 @@ export default function ChurchChatPage() {
         </button>
       </form>
     </main>
+  );
+}
+
+function ChannelChip({
+  active,
+  onClick,
+  label,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`shrink-0 rounded-full border px-3 py-1 text-xs font-medium ${
+        active
+          ? "border-red-600 bg-red-600 text-white"
+          : "border-gray-300 text-gray-700"
+      }`}
+    >
+      {label}
+    </button>
   );
 }
