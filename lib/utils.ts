@@ -100,6 +100,79 @@ export function primeGeolocation(): void {
   );
 }
 
+const LAST_POS_KEY = "church-alert:lastPos";
+type StoredPos = { latitude: number; longitude: number; ts: number };
+
+// Cap the fallback at this age — better to send no coords than coords from
+// before the user moved across town.
+const STALE_AFTER_MS = 10 * 60 * 1000;
+
+export function readLastKnownPos(): StoredPos | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.localStorage.getItem(LAST_POS_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as StoredPos;
+    if (
+      typeof parsed.latitude !== "number" ||
+      typeof parsed.longitude !== "number" ||
+      typeof parsed.ts !== "number"
+    )
+      return null;
+    if (Date.now() - parsed.ts > STALE_AFTER_MS) return null;
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+
+function writeLastKnownPos(pos: StoredPos) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(LAST_POS_KEY, JSON.stringify(pos));
+  } catch {
+    /* quota / private mode — ignore */
+  }
+}
+
+// Keep a live GPS watch open while the chat is mounted, persisting every
+// fresh fix to localStorage. This way a panic can always fall back to the
+// most-recent-known coordinates even if the satellite lock momentarily
+// drops or the user's permission state flips. Returns a cleanup fn.
+export function startGeoWatch(): () => void {
+  if (typeof navigator === "undefined" || !navigator.geolocation) return () => {};
+  const id = navigator.geolocation.watchPosition(
+    (pos) => {
+      writeLastKnownPos({
+        latitude: pos.coords.latitude,
+        longitude: pos.coords.longitude,
+        ts: Date.now(),
+      });
+    },
+    () => {
+      /* permission errors handled elsewhere via permissions API */
+    },
+    { enableHighAccuracy: true, maximumAge: 30_000, timeout: 30_000 }
+  );
+  return () => {
+    try {
+      navigator.geolocation.clearWatch(id);
+    } catch {
+      /* already cleared */
+    }
+  };
+}
+
+// Best-effort coords for a panic: try a fresh-or-recent fix first, then
+// fall back to whatever we cached during the live watch.
+export async function bestPanicCoords(): Promise<
+  { latitude: number; longitude: number } | null
+> {
+  const live = await getQuickPosition(5000, 5 * 60_000);
+  if (live) return live;
+  return readLastKnownPos();
+}
+
 export function alertTone(message: string): "panic" | "standdown" | "beep" {
   if (/^PANIC\b/i.test(message)) return "panic";
   if (/^STAND DOWN\b/i.test(message)) return "standdown";
