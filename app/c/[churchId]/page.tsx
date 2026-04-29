@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
@@ -42,8 +42,8 @@ type Message = {
   created_at: string;
 };
 
-type Channel = "everyone" | TeamSlug;
 type Role = "owner" | "member";
+type ViewMode = "team" | "join-list" | "everyone";
 type Church = { id: string; name: string };
 type LoadState =
   | { kind: "loading" }
@@ -62,11 +62,13 @@ export default function ChurchChatPage() {
   const churchId = params?.churchId ?? "";
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [messages, setMessages] = useState<Message[]>([]);
+  const [joinedTeams, setJoinedTeams] = useState<TeamSlug[]>([]);
+  const [activeTeamIdx, setActiveTeamIdx] = useState(0);
+  const [viewMode, setViewMode] = useState<ViewMode>("everyone");
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
   const [panicSending, setPanicSending] = useState(false);
   const [push, setPush] = useState<PushSupport>("default");
-  const [channel, setChannel] = useState<Channel>("everyone");
   const [profileOpen, setProfileOpen] = useState(false);
   const [mintedInvite, setMintedInvite] = useState<string | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
@@ -110,10 +112,10 @@ export default function ChurchChatPage() {
             .maybeSingle<{ display_name: string }>(),
           supabase
             .from("church_members")
-            .select("role")
+            .select("role, joined_teams")
             .eq("user_id", userData.user.id)
             .eq("church_id", churchId)
-            .maybeSingle<{ role: Role }>(),
+            .maybeSingle<{ role: Role; joined_teams: string[] }>(),
           supabase
             .from("churches")
             .select("id, name")
@@ -127,10 +129,15 @@ export default function ChurchChatPage() {
         return;
       }
       if (!membership) {
-        setState({ kind: "error", message: "You're not a member of this church" });
+        setState({
+          kind: "error",
+          message: "You're not a member of this church",
+        });
         return;
       }
       const displayName = profile?.display_name ?? userData.user.email ?? "User";
+      const teams = (membership.joined_teams ?? []).filter(isTeamSlug);
+      setJoinedTeams(teams);
 
       const { data: existing } = await supabase
         .from("alerts")
@@ -199,6 +206,16 @@ export default function ChurchChatPage() {
     el.scrollTop = 0;
   }, [messages.length]);
 
+  const activeTeam: TeamSlug | null =
+    joinedTeams.length > 0 ? joinedTeams[activeTeamIdx % joinedTeams.length] : null;
+
+  const sendTeamSlug: TeamSlug | null =
+    viewMode === "team" && activeTeam ? activeTeam : null;
+  const channelLabel =
+    viewMode === "team" && activeTeam
+      ? TEAMS.find((t) => t.slug === activeTeam)?.name ?? activeTeam
+      : "Everyone";
+
   const insertMessage = useCallback(
     async (opts: {
       message: string;
@@ -248,12 +265,10 @@ export default function ChurchChatPage() {
       if (!text) return;
       setSending(true);
       try {
-        const teamSlug: TeamSlug | null =
-          channel === "everyone" ? null : channel;
         const ok = await insertMessage({
           message: text,
           isAlert: false,
-          teamSlug,
+          teamSlug: sendTeamSlug,
           attachGps: false,
         });
         if (ok) setDraft("");
@@ -261,46 +276,36 @@ export default function ChurchChatPage() {
         setSending(false);
       }
     },
-    [draft, channel, insertMessage]
+    [draft, sendTeamSlug, insertMessage]
   );
 
   const handleAlertTeam = useCallback(async () => {
     const text = draft.trim();
     if (!text) {
-      window.alert("Type a message to alert the team about.");
+      window.alert("Type a message first.");
       return;
     }
-    if (channel === "everyone") {
-      if (
-        !window.confirm(
-          "Alert everyone in this church? For team-only alerts, switch to a team tab first."
-        )
-      )
-        return;
-    } else {
-      const teamName = TEAMS.find((t) => t.slug === channel)?.name ?? channel;
-      if (!window.confirm(`Send team alert to ${teamName}?`)) return;
-    }
+    const targetName =
+      sendTeamSlug
+        ? TEAMS.find((t) => t.slug === sendTeamSlug)?.name ?? sendTeamSlug
+        : "everyone";
+    if (!window.confirm(`Send team alert to ${targetName}?`)) return;
     setPanicSending(true);
     try {
-      const teamSlug: TeamSlug | null =
-        channel === "everyone" ? null : channel;
       const ok = await insertMessage({
         message: text,
         isAlert: true,
-        teamSlug,
+        teamSlug: sendTeamSlug,
         attachGps: true,
       });
       if (ok) setDraft("");
     } finally {
       setPanicSending(false);
     }
-  }, [draft, channel, insertMessage]);
+  }, [draft, sendTeamSlug, insertMessage]);
 
   const handlePanic = useCallback(async () => {
-    if (
-      !window.confirm("Send PANIC alert to everyone in this church?")
-    )
+    if (!window.confirm("Send PANIC alert to everyone in this church?"))
       return;
     setPanicSending(true);
     try {
@@ -330,6 +335,52 @@ export default function ChurchChatPage() {
     }
   }, [insertMessage]);
 
+  const persistJoinedTeams = useCallback(
+    async (next: TeamSlug[]) => {
+      if (state.kind !== "ready") return;
+      const { error } = await supabase
+        .from("church_members")
+        .update({ joined_teams: next })
+        .eq("user_id", state.userId)
+        .eq("church_id", churchId);
+      if (error) {
+        window.alert(`Could not save team change: ${error.message}`);
+        return;
+      }
+      setJoinedTeams(next);
+    },
+    [churchId, state]
+  );
+
+  const handleJoinTeam = useCallback(
+    async (slug: TeamSlug) => {
+      if (joinedTeams.includes(slug)) return;
+      const next = [...joinedTeams, slug];
+      await persistJoinedTeams(next);
+      setActiveTeamIdx(next.length - 1);
+      setViewMode("team");
+    },
+    [joinedTeams, persistJoinedTeams]
+  );
+
+  const handleLeaveTeam = useCallback(async () => {
+    if (!activeTeam) return;
+    const next = joinedTeams.filter((t) => t !== activeTeam);
+    await persistJoinedTeams(next);
+    setActiveTeamIdx(0);
+    if (next.length === 0) setViewMode("everyone");
+  }, [activeTeam, joinedTeams, persistJoinedTeams]);
+
+  const cycleNext = useCallback(() => {
+    if (joinedTeams.length === 0) return;
+    setActiveTeamIdx((i) => (i + 1) % joinedTeams.length);
+  }, [joinedTeams.length]);
+
+  const cyclePrev = useCallback(() => {
+    if (joinedTeams.length === 0) return;
+    setActiveTeamIdx((i) => (i - 1 + joinedTeams.length) % joinedTeams.length);
+  }, [joinedTeams.length]);
+
   const handleMintInvite = useCallback(async () => {
     setMintedInvite(null);
     setInviteCopied(false);
@@ -350,7 +401,7 @@ export default function ChurchChatPage() {
       setInviteCopied(true);
       setTimeout(() => setInviteCopied(false), 2000);
     } catch {
-      // fallthrough — leave the URL visible for manual copy
+      /* leave the URL visible for manual copy */
     }
   }, [mintedInvite]);
 
@@ -358,6 +409,18 @@ export default function ChurchChatPage() {
     await supabase.auth.signOut();
     router.replace("/login");
   }, [router]);
+
+  const visible = useMemo(() => {
+    return messages.filter((m) =>
+      m.is_alert
+        ? true
+        : viewMode === "everyone"
+          ? m.team_slug === null
+          : viewMode === "team" && activeTeam
+            ? m.team_slug === activeTeam
+            : false
+    );
+  }, [messages, viewMode, activeTeam]);
 
   if (state.kind === "loading") {
     return (
@@ -379,20 +442,11 @@ export default function ChurchChatPage() {
     );
   }
 
-  const channelLabel =
-    channel === "everyone"
-      ? "Everyone"
-      : TEAMS.find((t) => t.slug === channel)?.name ?? channel;
-  const visible = messages.filter((m) =>
-    m.is_alert
-      ? true
-      : channel === "everyone"
-        ? m.team_slug === null
-        : m.team_slug === channel
-  );
+  const otherTeams = TEAMS.filter((t) => !joinedTeams.includes(t.slug));
+  const showChat = viewMode === "team" || viewMode === "everyone";
 
   return (
-    <main className="mx-auto flex min-h-full w-full max-w-md flex-col bg-neutral-950 text-neutral-100">
+    <main className="flex min-h-screen w-full flex-col bg-neutral-950 text-neutral-100">
       <header className="sticky top-0 z-10 border-b border-neutral-800 bg-neutral-950/95 px-4 py-3 backdrop-blur">
         <h1 className="text-base font-semibold">Church Alert</h1>
       </header>
@@ -467,10 +521,7 @@ export default function ChurchChatPage() {
             <div className="text-xs uppercase text-neutral-500">
               {state.role}
             </div>
-            <Link
-              href="/home"
-              className="text-sm text-red-400 underline"
-            >
+            <Link href="/home" className="text-sm text-red-400 underline">
               ← Back to home
             </Link>
             {state.role === "owner" && (
@@ -533,172 +584,256 @@ export default function ChurchChatPage() {
         </div>
       )}
 
-      <form
-        onSubmit={handleSend}
-        className="mx-3 mt-3 flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900 p-3"
-      >
-        <textarea
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-          placeholder={`Message ${channelLabel}… (type @ to tag a location)`}
-          rows={2}
-          className="resize-none bg-transparent text-base text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
-        />
-        <div className="flex gap-2">
+      {viewMode === "team" && activeTeam && (
+        <div className="mx-3 mt-3 flex items-center gap-2 rounded border border-neutral-800 bg-neutral-900 px-3 py-2">
           <button
-            type="submit"
-            disabled={sending || !draft.trim()}
-            className="flex-1 rounded bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-100 disabled:opacity-50"
+            type="button"
+            onClick={cyclePrev}
+            disabled={joinedTeams.length < 2}
+            className="rounded border border-neutral-700 px-2 py-1 text-sm disabled:opacity-40"
+            aria-label="Previous team"
           >
-            {sending ? "Sending…" : "Send"}
+            ←
+          </button>
+          <div className="flex-1 text-center">
+            <div className="text-sm font-semibold">
+              {TEAMS.find((t) => t.slug === activeTeam)?.name}
+            </div>
+            <div className="text-xs text-neutral-500">
+              {activeTeamIdx + 1} of {joinedTeams.length} team
+              {joinedTeams.length === 1 ? "" : "s"}
+            </div>
+          </div>
+          <button
+            type="button"
+            onClick={cycleNext}
+            disabled={joinedTeams.length < 2}
+            className="rounded border border-neutral-700 px-2 py-1 text-sm disabled:opacity-40"
+            aria-label="Next team"
+          >
+            →
           </button>
           <button
             type="button"
-            onClick={handleAlertTeam}
-            disabled={panicSending || !draft.trim()}
-            className="flex-1 rounded bg-red-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"
+            onClick={handleLeaveTeam}
+            className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-300"
           >
-            {panicSending ? "Sending…" : "Alert team"}
+            leave
           </button>
         </div>
-      </form>
+      )}
 
-      <div ref={scrollerRef} className="flex-1 overflow-y-auto px-3 py-3 pb-24">
-        {visible.length === 0 ? (
-          <p className="py-8 text-center text-sm text-neutral-500">
-            No messages here yet. Say something.
-          </p>
-        ) : (
-          <ul className="flex flex-col gap-2">
-            {visible.map((m) => {
-              const tone = m.is_alert ? alertTone(m.message) : null;
-              const cardClass = tone
-                ? tone === "panic"
-                  ? "rounded border border-red-700/60 bg-red-950/40 p-3"
-                  : "rounded border border-emerald-700/50 bg-emerald-950/30 p-3"
-                : "rounded border border-neutral-800 bg-neutral-900 p-3";
-              const teamLabel =
-                m.team_slug && isTeamSlug(m.team_slug)
-                  ? TEAMS.find((t) => t.slug === m.team_slug)?.name
-                  : null;
-              const locationLabel = m.location
-                ? LOCATIONS.find((l) => l.slug === m.location)?.name
-                : null;
-              return (
-                <li key={m.id} className={`flex flex-col ${cardClass}`}>
-                  <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
-                    <span className="text-sm font-medium text-neutral-100">
-                      {tone === "panic" ? "🚨 " : ""}
-                      {m.sender_name}
-                    </span>
-                    {m.is_alert && (
-                      <span className="rounded bg-red-700/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-300">
-                        {teamLabel ?? "Everyone"}
-                      </span>
-                    )}
-                    {!m.is_alert && teamLabel && (
-                      <span className="text-xs text-neutral-500">
-                        · {teamLabel}
-                      </span>
-                    )}
-                    {locationLabel && (
-                      <span className="text-xs text-neutral-400">
-                        · 📍 {locationLabel}
-                      </span>
-                    )}
-                    <span className="ml-auto text-xs text-neutral-500">
-                      {formatTimestamp(m.created_at)}
-                    </span>
-                  </div>
-                  <p
-                    className={`mt-1 whitespace-pre-wrap text-sm ${
-                      tone === "panic"
-                        ? "font-semibold text-red-200"
-                        : tone === "standdown"
-                          ? "font-semibold text-emerald-200"
-                          : "text-neutral-200"
-                    }`}
+      {showChat && (
+        <form
+          onSubmit={handleSend}
+          className="mx-3 mt-3 flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900 p-3"
+        >
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={`Message ${channelLabel}… (type @ to tag a location)`}
+            rows={2}
+            className="resize-none bg-transparent text-base text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
+          />
+          <div className="flex gap-2">
+            <button
+              type="submit"
+              disabled={sending || !draft.trim()}
+              className="flex-1 rounded bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-100 disabled:opacity-50"
+            >
+              {sending ? "Sending…" : "Send"}
+            </button>
+            <button
+              type="button"
+              onClick={handleAlertTeam}
+              disabled={panicSending || !draft.trim()}
+              className="flex-1 rounded bg-red-700 px-3 py-2 text-sm font-bold text-white disabled:opacity-50"
+            >
+              {panicSending ? "Sending…" : "Alert team"}
+            </button>
+          </div>
+        </form>
+      )}
+
+      {viewMode === "join-list" && (
+        <div className="mx-3 mt-3 flex flex-col gap-2">
+          <h2 className="text-xs uppercase tracking-wide text-neutral-500">
+            Teams to join
+          </h2>
+          {otherTeams.length === 0 ? (
+            <p className="rounded border border-neutral-800 bg-neutral-900 px-4 py-3 text-sm text-neutral-400">
+              You&apos;re on every team in this church.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {otherTeams.map((t) => (
+                <li
+                  key={t.slug}
+                  className="flex items-center justify-between rounded border border-neutral-800 bg-neutral-900 px-4 py-3"
+                >
+                  <span className="font-medium">{t.name}</span>
+                  <button
+                    type="button"
+                    onClick={() => handleJoinTeam(t.slug)}
+                    className="rounded bg-emerald-700 px-3 py-1 text-xs font-medium text-white"
                   >
-                    {m.message}
-                  </p>
-                  {m.latitude != null && m.longitude != null && (
-                    <div className="mt-2 flex flex-col gap-1">
-                      <iframe
-                        title="Alert location"
-                        loading="lazy"
-                        src={`https://www.google.com/maps?q=${m.latitude},${m.longitude}&z=16&output=embed`}
-                        className="h-40 w-full rounded border border-neutral-800"
-                      />
-                      <div className="flex gap-3 text-xs">
-                        <a
-                          href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-red-400 underline"
-                        >
-                          Directions in Google Maps ↗
-                        </a>
-                        <a
-                          href={`https://maps.apple.com/?daddr=${m.latitude},${m.longitude}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="text-red-400 underline"
-                        >
-                          Directions in Apple Maps ↗
-                        </a>
-                      </div>
-                    </div>
-                  )}
+                    Join
+                  </button>
                 </li>
-              );
-            })}
-          </ul>
-        )}
-        {messages.some((m) => m.is_alert && alertTone(m.message) === "panic") && (
-          <button
-            type="button"
-            onClick={handleStandDown}
-            disabled={panicSending}
-            className="mt-4 w-full rounded border border-emerald-700/60 px-4 py-2 text-sm font-medium text-emerald-300 disabled:opacity-50"
-          >
-            Send Stand Down
-          </button>
-        )}
-      </div>
+              ))}
+            </ul>
+          )}
+          {joinedTeams.length > 0 && (
+            <p className="mt-1 text-xs text-neutral-500">
+              On {joinedTeams.length} team{joinedTeams.length === 1 ? "" : "s"}
+              {": "}
+              {joinedTeams
+                .map((s) => TEAMS.find((t) => t.slug === s)?.name)
+                .join(", ")}
+            </p>
+          )}
+        </div>
+      )}
+
+      {showChat && (
+        <div ref={scrollerRef} className="flex-1 overflow-y-auto px-3 py-3 pb-24">
+          {visible.length === 0 ? (
+            <p className="py-8 text-center text-sm text-neutral-500">
+              No messages here yet. Say something.
+            </p>
+          ) : (
+            <ul className="flex flex-col gap-2">
+              {visible.map((m) => {
+                const tone = m.is_alert ? alertTone(m.message) : null;
+                const cardClass = tone
+                  ? tone === "panic"
+                    ? "rounded border border-red-700/60 bg-red-950/40 p-3"
+                    : "rounded border border-emerald-700/50 bg-emerald-950/30 p-3"
+                  : "rounded border border-neutral-800 bg-neutral-900 p-3";
+                const teamLabel =
+                  m.team_slug && isTeamSlug(m.team_slug)
+                    ? TEAMS.find((t) => t.slug === m.team_slug)?.name
+                    : null;
+                const locationLabel = m.location
+                  ? LOCATIONS.find((l) => l.slug === m.location)?.name
+                  : null;
+                return (
+                  <li key={m.id} className={`flex flex-col ${cardClass}`}>
+                    <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
+                      <span className="text-sm font-medium text-neutral-100">
+                        {tone === "panic" ? "🚨 " : ""}
+                        {m.sender_name}
+                      </span>
+                      {m.is_alert && (
+                        <span className="rounded bg-red-700/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-300">
+                          {teamLabel ?? "Everyone"}
+                        </span>
+                      )}
+                      {!m.is_alert && teamLabel && (
+                        <span className="text-xs text-neutral-500">
+                          · {teamLabel}
+                        </span>
+                      )}
+                      {locationLabel && (
+                        <span className="text-xs text-neutral-400">
+                          · 📍 {locationLabel}
+                        </span>
+                      )}
+                      <span className="ml-auto text-xs text-neutral-500">
+                        {formatTimestamp(m.created_at)}
+                      </span>
+                    </div>
+                    <p
+                      className={`mt-1 whitespace-pre-wrap text-sm ${
+                        tone === "panic"
+                          ? "font-semibold text-red-200"
+                          : tone === "standdown"
+                            ? "font-semibold text-emerald-200"
+                            : "text-neutral-200"
+                      }`}
+                    >
+                      {m.message}
+                    </p>
+                    {m.latitude != null && m.longitude != null && (
+                      <div className="mt-2 flex flex-col gap-1">
+                        <iframe
+                          title="Alert location"
+                          loading="lazy"
+                          src={`https://www.google.com/maps?q=${m.latitude},${m.longitude}&z=16&output=embed`}
+                          className="h-40 w-full rounded border border-neutral-800"
+                        />
+                        <div className="flex gap-3 text-xs">
+                          <a
+                            href={`https://www.google.com/maps/dir/?api=1&destination=${m.latitude},${m.longitude}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-red-400 underline"
+                          >
+                            Directions in Google Maps ↗
+                          </a>
+                          <a
+                            href={`https://maps.apple.com/?daddr=${m.latitude},${m.longitude}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="text-red-400 underline"
+                          >
+                            Directions in Apple Maps ↗
+                          </a>
+                        </div>
+                      </div>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+          {messages.some(
+            (m) => m.is_alert && alertTone(m.message) === "panic"
+          ) && (
+            <button
+              type="button"
+              onClick={handleStandDown}
+              disabled={panicSending}
+              className="mt-4 w-full rounded border border-emerald-700/60 px-4 py-2 text-sm font-medium text-emerald-300 disabled:opacity-50"
+            >
+              Send Stand Down
+            </button>
+          )}
+        </div>
+      )}
+
+      {viewMode === "join-list" && <div className="flex-1" />}
 
       <nav className="sticky bottom-0 flex border-t border-neutral-800 bg-neutral-950/95 backdrop-blur">
         <BottomTab
-          active={channel !== "everyone" && channel === firstTeam(channel)}
+          active={viewMode === "team"}
           label={
-            channel !== "everyone"
-              ? TEAMS.find((t) => t.slug === channel)?.name ?? "Team"
-              : "Worship"
+            activeTeam
+              ? TEAMS.find((t) => t.slug === activeTeam)?.name ?? "Team"
+              : "Pick team"
           }
-          onClick={() => setChannel(channel === "everyone" ? "worship" : channel)}
+          onClick={() => {
+            if (joinedTeams.length === 0) {
+              setViewMode("join-list");
+            } else {
+              setViewMode("team");
+            }
+          }}
           highlight
         />
         <BottomTab
-          active={false}
+          active={viewMode === "join-list"}
           label="Other teams"
-          onClick={() => {
-            const idx = TEAMS.findIndex((t) => t.slug === channel);
-            const next =
-              idx === -1 ? TEAMS[1].slug : TEAMS[(idx + 1) % TEAMS.length].slug;
-            setChannel(next);
-          }}
+          onClick={() => setViewMode("join-list")}
         />
         <BottomTab
-          active={channel === "everyone"}
+          active={viewMode === "everyone"}
           label="Everyone"
-          onClick={() => setChannel("everyone")}
+          onClick={() => setViewMode("everyone")}
         />
       </nav>
     </main>
   );
-}
-
-function firstTeam(c: Channel): TeamSlug {
-  return c === "everyone" ? TEAMS[0].slug : c;
 }
 
 function BottomTab({

@@ -177,6 +177,12 @@ create table if not exists public.church_members (
   primary key (user_id, church_id)
 );
 
+alter table public.church_members
+  add column if not exists joined_teams text[] not null default '{}';
+-- joined_teams: which teams (TEAMS slugs) this user is on within the
+-- church. The chat lets a user join/leave individual teams without
+-- changing church membership.
+
 create index if not exists church_members_user_idx
   on public.church_members (user_id);
 
@@ -257,12 +263,20 @@ create policy "profiles_co_members_select" on public.profiles
   for select to authenticated using (public.is_co_member(profiles.id));
 
 -- church_members: read your own memberships and co-members of your churches.
--- Insert/delete only happens via security-definer RPCs below, so no write policies.
+-- Inserts/deletes go through SECURITY DEFINER RPCs (redeem_invite,
+-- create_church). Updates are allowed for your own row only — used for
+-- toggling joined_teams when you join or leave a team in the chat.
 drop policy if exists "members_visible" on public.church_members;
 create policy "members_visible" on public.church_members
   for select to authenticated using (
     user_id = auth.uid() or public.is_member_of(church_id)
   );
+
+drop policy if exists "members_self_update" on public.church_members;
+create policy "members_self_update" on public.church_members
+  for update to authenticated
+  using (user_id = auth.uid())
+  with check (user_id = auth.uid());
 
 -- invites: owners read/write invites for their church. Anyone holding the
 -- token can SELECT the row to preview the church before signing up
