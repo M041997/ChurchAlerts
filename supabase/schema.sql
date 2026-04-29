@@ -111,3 +111,234 @@ create policy "poc_alerts_select" on public.alerts
 drop policy if exists "poc_alerts_insert" on public.alerts;
 create policy "poc_alerts_insert" on public.alerts
   for insert to anon, authenticated with check (true);
+
+-- ============================================================
+-- Auth + invites (feat/auth-and-invites)
+-- Coexists with the legacy CHURCH1 join-code flow until cutover.
+-- ============================================================
+
+create table if not exists public.profiles (
+  id uuid primary key references auth.users(id) on delete cascade,
+  display_name text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.church_members (
+  user_id uuid not null references public.profiles(id) on delete cascade,
+  church_id uuid not null references public.churches(id) on delete cascade,
+  role text not null default 'member' check (role in ('owner', 'member')),
+  created_at timestamptz not null default now(),
+  primary key (user_id, church_id)
+);
+
+create index if not exists church_members_user_idx
+  on public.church_members (user_id);
+
+create table if not exists public.invites (
+  token text primary key,
+  church_id uuid not null references public.churches(id) on delete cascade,
+  created_by uuid not null references public.profiles(id) on delete cascade,
+  redeemed_by uuid references public.profiles(id) on delete set null,
+  redeemed_at timestamptz,
+  expires_at timestamptz not null default (now() + interval '7 days'),
+  created_at timestamptz not null default now()
+);
+
+create index if not exists invites_church_idx on public.invites (church_id);
+
+alter table public.profiles enable row level security;
+alter table public.church_members enable row level security;
+alter table public.invites enable row level security;
+
+-- Helpers (security definer) — break RLS recursion on church_members.
+create or replace function public.is_member_of(p_church_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.church_members
+    where user_id = auth.uid() and church_id = p_church_id
+  );
+$$;
+
+create or replace function public.is_owner_of(p_church_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1 from public.church_members
+    where user_id = auth.uid()
+      and church_id = p_church_id
+      and role = 'owner'
+  );
+$$;
+
+create or replace function public.is_co_member(p_user_id uuid)
+returns boolean
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select exists (
+    select 1
+    from public.church_members me
+    join public.church_members them on me.church_id = them.church_id
+    where me.user_id = auth.uid() and them.user_id = p_user_id
+  );
+$$;
+
+grant execute on function public.is_member_of(uuid) to authenticated;
+grant execute on function public.is_owner_of(uuid) to authenticated;
+grant execute on function public.is_co_member(uuid) to authenticated;
+
+-- profiles: a user reads/writes their own row; can also see profiles of
+-- other members of any church they share.
+drop policy if exists "profiles_self_rw" on public.profiles;
+create policy "profiles_self_rw" on public.profiles
+  for all to authenticated
+  using (id = auth.uid())
+  with check (id = auth.uid());
+
+drop policy if exists "profiles_co_members_select" on public.profiles;
+create policy "profiles_co_members_select" on public.profiles
+  for select to authenticated using (public.is_co_member(profiles.id));
+
+-- church_members: read your own memberships and co-members of your churches.
+-- Insert/delete only happens via security-definer RPCs below, so no write policies.
+drop policy if exists "members_visible" on public.church_members;
+create policy "members_visible" on public.church_members
+  for select to authenticated using (
+    user_id = auth.uid() or public.is_member_of(church_id)
+  );
+
+-- invites: owners read/write invites for their church. Anyone holding the
+-- token can SELECT the row to preview the church before signing up
+-- (the token itself is the secret).
+drop policy if exists "invites_owner_rw" on public.invites;
+create policy "invites_owner_rw" on public.invites
+  for all to authenticated
+  using (public.is_owner_of(invites.church_id))
+  with check (public.is_owner_of(invites.church_id));
+
+drop policy if exists "invites_token_preview" on public.invites;
+create policy "invites_token_preview" on public.invites
+  for select to anon, authenticated using (true);
+
+-- create_church: caller becomes the owner of a freshly-created church.
+create or replace function public.create_church(church_name text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_church_id uuid;
+begin
+  if v_user is null then
+    raise exception 'not authenticated';
+  end if;
+  if length(coalesce(trim(church_name), '')) = 0 then
+    raise exception 'church name required';
+  end if;
+
+  insert into public.churches (name, join_code)
+    values (trim(church_name), 'INV-' || encode(extensions.gen_random_bytes(4), 'hex'))
+    returning id into v_church_id;
+
+  insert into public.church_members (user_id, church_id, role)
+    values (v_user, v_church_id, 'owner');
+
+  return v_church_id;
+end;
+$$;
+
+grant execute on function public.create_church(text) to authenticated;
+
+-- create_invite: an owner of a church mints a single-use token.
+create or replace function public.create_invite(p_church_id uuid)
+returns text
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_token text;
+begin
+  if v_user is null then
+    raise exception 'not authenticated';
+  end if;
+
+  if not exists (
+    select 1 from public.church_members
+    where user_id = v_user and church_id = p_church_id and role = 'owner'
+  ) then
+    raise exception 'not an owner of this church';
+  end if;
+
+  v_token := encode(extensions.gen_random_bytes(16), 'hex');
+
+  insert into public.invites (token, church_id, created_by)
+    values (v_token, p_church_id, v_user);
+
+  return v_token;
+end;
+$$;
+
+grant execute on function public.create_invite(uuid) to authenticated;
+
+-- redeem_invite: caller becomes a member of the church the invite points to.
+-- Atomically marks the invite consumed.
+create or replace function public.redeem_invite(invite_token text)
+returns uuid
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_user uuid := auth.uid();
+  v_church uuid;
+  v_redeemed uuid;
+  v_expires timestamptz;
+begin
+  if v_user is null then
+    raise exception 'not authenticated';
+  end if;
+
+  select church_id, redeemed_by, expires_at
+    into v_church, v_redeemed, v_expires
+  from public.invites
+  where token = invite_token
+  for update;
+
+  if v_church is null then
+    raise exception 'invite not found';
+  end if;
+  if v_redeemed is not null then
+    raise exception 'invite already used';
+  end if;
+  if v_expires is not null and v_expires < now() then
+    raise exception 'invite expired';
+  end if;
+
+  update public.invites
+    set redeemed_by = v_user, redeemed_at = now()
+    where token = invite_token;
+
+  insert into public.church_members (user_id, church_id, role)
+    values (v_user, v_church, 'member')
+    on conflict do nothing;
+
+  return v_church;
+end;
+$$;
+
+grant execute on function public.redeem_invite(text) to authenticated;
