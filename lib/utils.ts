@@ -175,10 +175,11 @@ export async function bestPanicCoords(): Promise<
 
 // Extract a human-readable message from anything `throw`n. Handles native
 // Error, Supabase PostgrestError / AuthError plain objects, and falls back
-// to a stringified form. Without this, a thrown PostgrestError shows up as
-// "[object Object]" because the object doesn't extend Error.
+// to a stringified form. Always logs the raw error to console so DevTools
+// captures shapes we can't yet handle, and refuses to ever return the
+// useless literal "[object Object]".
 export function errorMessage(err: unknown): string {
-  if (err instanceof Error) return err.message;
+  if (err instanceof Error) return err.message || err.name || "Error";
   if (err && typeof err === "object") {
     const obj = err as Record<string, unknown>;
     if (typeof obj.message === "string" && obj.message.length > 0)
@@ -186,14 +187,25 @@ export function errorMessage(err: unknown): string {
     if (typeof obj.error_description === "string")
       return obj.error_description;
     if (typeof obj.error === "string") return obj.error;
+    if (typeof obj.msg === "string") return obj.msg;
+    if (typeof obj.statusText === "string") return obj.statusText;
+    if (typeof obj.code === "string") return `Error code: ${obj.code}`;
     try {
-      const json = JSON.stringify(obj);
+      const json = JSON.stringify(obj, Object.getOwnPropertyNames(obj));
       if (json && json !== "{}") return json;
     } catch {
       /* unstringifiable — fall through */
     }
+    if (typeof console !== "undefined") {
+      console.error("[errorMessage] unrecognized error object:", err);
+    }
+    return "Something went wrong (see browser console for details)";
   }
-  return String(err);
+  if (err == null) return "Unknown error";
+  const s = String(err);
+  return s === "[object Object]"
+    ? "Something went wrong (see browser console for details)"
+    : s;
 }
 
 export function alertTone(message: string): "panic" | "standdown" | "beep" {
