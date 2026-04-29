@@ -139,6 +139,14 @@ create policy "alerts_member_insert" on public.alerts
   for insert to authenticated
   with check (public.is_member_of(church_id) and sender_id = auth.uid());
 
+-- Owners of the church can moderate (delete) any alert in their church.
+-- Senders cannot delete their own past messages by design — having a clear
+-- audit trail of who said what during an emergency matters more than
+-- letting people redact themselves.
+drop policy if exists "alerts_owner_delete" on public.alerts;
+create policy "alerts_owner_delete" on public.alerts
+  for delete to authenticated using (public.is_owner_of(church_id));
+
 -- ============================================================
 -- Auth + invites (feat/auth-and-invites)
 -- Coexists with the legacy CHURCH1 join-code flow until cutover.

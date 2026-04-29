@@ -217,6 +217,20 @@ export default function ChurchChatPage() {
       .on(
         "postgres_changes",
         {
+          event: "DELETE",
+          schema: "public",
+          table: "alerts",
+          filter: `church_id=eq.${churchId}`,
+        },
+        (payload) => {
+          const old = payload.old as { id?: string } | null;
+          if (!old?.id) return;
+          setMessages((prev) => prev.filter((m) => m.id !== old.id));
+        }
+      )
+      .on(
+        "postgres_changes",
+        {
           event: "INSERT",
           schema: "public",
           table: "alerts",
@@ -525,6 +539,20 @@ export default function ChurchChatPage() {
     []
   );
 
+  const handleDeleteMessage = useCallback(
+    async (id: string) => {
+      if (state.kind !== "ready" || state.role !== "owner") return;
+      if (!window.confirm("Delete this message for everyone?")) return;
+      // Optimistic — realtime DELETE event will keep other clients in sync.
+      setMessages((prev) => prev.filter((m) => m.id !== id));
+      const { error } = await supabase.from("alerts").delete().eq("id", id);
+      if (error) {
+        window.alert(`Couldn't delete: ${error.message}`);
+      }
+    },
+    [state]
+  );
+
   const handleRename = useCallback(async () => {
     if (state.kind !== "ready") return;
     const trimmed = nameDraft.trim();
@@ -687,7 +715,7 @@ export default function ChurchChatPage() {
         {profileOpen && (
           <div className="mt-3 flex flex-col gap-3 border-t border-neutral-800 pt-3 text-sm">
             <div className="text-xs uppercase text-neutral-500">
-              {state.role}
+              {state.role === "owner" ? "admin" : state.role}
             </div>
             <label className="flex flex-col gap-1 text-xs text-neutral-400">
               Display name
@@ -987,6 +1015,16 @@ export default function ChurchChatPage() {
                       <span className="ml-auto text-xs text-neutral-500">
                         {formatTimestamp(m.created_at)}
                       </span>
+                      {state.role === "owner" && (
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteMessage(m.id)}
+                          aria-label="Delete message"
+                          className="text-xs text-neutral-500 hover:text-red-400"
+                        >
+                          ×
+                        </button>
+                      )}
                     </div>
                     <p
                       className={`mt-1 whitespace-pre-wrap text-sm ${

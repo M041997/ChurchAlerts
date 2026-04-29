@@ -141,7 +141,7 @@ export default function HomePage() {
                 <div className="flex items-center justify-between">
                   <span className="font-medium">{m.churches?.name}</span>
                   <span className="text-xs uppercase text-gray-500">
-                    {m.role}
+                    {m.role === "owner" ? "admin" : m.role}
                   </span>
                 </div>
                 <div className="flex flex-wrap gap-2">
