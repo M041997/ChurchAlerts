@@ -66,6 +66,12 @@ function LoginForm() {
         >
           {submitting ? "Logging in…" : "Log in"}
         </button>
+        <Link
+          href="/forgot-password"
+          className="self-start text-xs text-gray-500 underline"
+        >
+          Forgot password?
+        </Link>
       </form>
       <p className="text-sm text-gray-600">
         No account?{" "}
