@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import { supabase } from "@/lib/supabase";
 import type { User } from "@supabase/supabase-js";
 
@@ -143,14 +144,22 @@ export default function HomePage() {
                     {m.role}
                   </span>
                 </div>
-                {m.role === "owner" && (
-                  <button
-                    onClick={() => handleMintInvite(m.church_id)}
-                    className="self-start rounded border border-gray-300 px-3 py-1 text-sm"
+                <div className="flex flex-wrap gap-2">
+                  <Link
+                    href={`/c/${m.church_id}`}
+                    className="rounded bg-red-600 px-3 py-1 text-sm font-medium text-white"
                   >
-                    Mint invite link
-                  </button>
-                )}
+                    Open chat
+                  </Link>
+                  {m.role === "owner" && (
+                    <button
+                      onClick={() => handleMintInvite(m.church_id)}
+                      className="rounded border border-gray-300 px-3 py-1 text-sm"
+                    >
+                      Mint invite link
+                    </button>
+                  )}
+                </div>
                 {mintedInvite?.churchId === m.church_id && (
                   <div className="flex flex-col gap-1 rounded bg-gray-100 p-2 text-xs">
                     <span className="text-gray-500">Single-use link:</span>
