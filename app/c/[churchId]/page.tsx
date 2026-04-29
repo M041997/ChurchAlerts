@@ -63,6 +63,9 @@ export default function ChurchChatPage() {
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [messages, setMessages] = useState<Message[]>([]);
   const [joinedTeams, setJoinedTeams] = useState<TeamSlug[]>([]);
+  const [memberTeams, setMemberTeams] = useState<Record<string, TeamSlug[]>>(
+    {}
+  );
   const [activeTeamIdx, setActiveTeamIdx] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("everyone");
   const [draft, setDraft] = useState("");
@@ -138,6 +141,18 @@ export default function ChurchChatPage() {
       const displayName = profile?.display_name ?? userData.user.email ?? "User";
       const teams = (membership.joined_teams ?? []).filter(isTeamSlug);
       setJoinedTeams(teams);
+
+      const { data: allMembers } = await supabase
+        .from("church_members")
+        .select("user_id, joined_teams")
+        .eq("church_id", churchId)
+        .returns<{ user_id: string; joined_teams: string[] | null }[]>();
+      if (cancelled) return;
+      const teamsByUser: Record<string, TeamSlug[]> = {};
+      for (const row of allMembers ?? []) {
+        teamsByUser[row.user_id] = (row.joined_teams ?? []).filter(isTeamSlug);
+      }
+      setMemberTeams(teamsByUser);
 
       const { data: existing } = await supabase
         .from("alerts")
@@ -348,6 +363,7 @@ export default function ChurchChatPage() {
         return;
       }
       setJoinedTeams(next);
+      setMemberTeams((prev) => ({ ...prev, [state.userId]: next }));
     },
     [churchId, state]
   );
@@ -717,6 +733,11 @@ export default function ChurchChatPage() {
                 const locationLabel = m.location
                   ? LOCATIONS.find((l) => l.slug === m.location)?.name
                   : null;
+                const senderTeamNames = (
+                  m.sender_id ? memberTeams[m.sender_id] ?? [] : []
+                )
+                  .map((s) => TEAMS.find((t) => t.slug === s)?.name)
+                  .filter((n): n is string => Boolean(n));
                 return (
                   <li key={m.id} className={`flex flex-col ${cardClass}`}>
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
@@ -724,6 +745,18 @@ export default function ChurchChatPage() {
                         {tone === "panic" ? "🚨 " : ""}
                         {m.sender_name}
                       </span>
+                      {senderTeamNames.length > 0 && (
+                        <span className="flex flex-wrap gap-1">
+                          {senderTeamNames.map((n) => (
+                            <span
+                              key={n}
+                              className="rounded bg-neutral-800 px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-neutral-400"
+                            >
+                              {n}
+                            </span>
+                          ))}
+                        </span>
+                      )}
                       {m.is_alert && (
                         <span className="rounded bg-red-700/30 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-red-300">
                           {teamLabel ?? "Everyone"}
