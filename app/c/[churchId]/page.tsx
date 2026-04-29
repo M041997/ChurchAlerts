@@ -8,6 +8,7 @@ import {
   TEAMS,
   LOCATIONS,
   isTeamSlug,
+  CHAT_MUTED_KEY,
   type TeamSlug,
   type LocationSlug,
 } from "@/lib/supabase";
@@ -16,6 +17,7 @@ import {
   bestPanicCoords,
   detectLocationInText,
   formatTimestamp,
+  nearestLocationTo,
   primeGeolocation,
   startGeoWatch,
 } from "@/lib/utils";
@@ -73,10 +75,38 @@ export default function ChurchChatPage() {
   const [panicSending, setPanicSending] = useState(false);
   const [push, setPush] = useState<PushSupport>("default");
   const [profileOpen, setProfileOpen] = useState(false);
+  const [nameDraft, setNameDraft] = useState("");
+  const [renaming, setRenaming] = useState(false);
   const [mintedInvite, setMintedInvite] = useState<string | null>(null);
   const [inviteCopied, setInviteCopied] = useState(false);
   const [gpsBlocked, setGpsBlocked] = useState(false);
+  const [chatMuted, setChatMuted] = useState(false);
+  const chatMutedRef = useRef(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
+  const inputRef = useRef<HTMLTextAreaElement | null>(null);
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const stored = window.localStorage.getItem(CHAT_MUTED_KEY);
+    const initial = stored === "1";
+    setChatMuted(initial);
+    chatMutedRef.current = initial;
+  }, []);
+
+  const toggleMute = useCallback(() => {
+    setChatMuted((prev) => {
+      const next = !prev;
+      chatMutedRef.current = next;
+      try {
+        window.localStorage.setItem(CHAT_MUTED_KEY, next ? "1" : "0");
+      } catch {
+        /* private mode / quota — ignore */
+      }
+      return next;
+    });
+  }, []);
 
   useEffect(() => {
     setPush(pushSupportInitial());
@@ -202,7 +232,30 @@ export default function ChurchChatPage() {
               const tone = alertTone(row.message);
               if (tone === "standdown") play(allClearUrl());
               else play(sirenUrl());
-            } else if (!ownMessage) {
+              if (
+                !ownMessage &&
+                typeof window !== "undefined" &&
+                "Notification" in window &&
+                Notification.permission === "granted"
+              ) {
+                try {
+                  const prefix =
+                    tone === "panic"
+                      ? "🚨"
+                      : tone === "standdown"
+                        ? "✅"
+                        : "🔔";
+                  new Notification(`${prefix} ${row.sender_name}`, {
+                    body: row.message,
+                    icon: "/icon-192.png",
+                    tag: `alert-${row.id}`,
+                    requireInteraction: tone === "panic",
+                  });
+                } catch {
+                  /* notification API rejected — push fallback covers it */
+                }
+              }
+            } else if (!ownMessage && !chatMutedRef.current) {
               play(chatPingUrl());
             }
             return [row, ...prev];
@@ -240,7 +293,11 @@ export default function ChurchChatPage() {
     }): Promise<boolean> => {
       if (state.kind !== "ready") return false;
       const coords = opts.attachGps ? await bestPanicCoords() : null;
-      const location = detectLocationInText(opts.message);
+      const explicit = detectLocationInText(opts.message);
+      const fromGps = coords
+        ? nearestLocationTo(coords.latitude, coords.longitude)
+        : null;
+      const location = explicit ?? fromGps;
       const { data: inserted, error } = await supabase
         .from("alerts")
         .insert({
@@ -421,6 +478,79 @@ export default function ChurchChatPage() {
     }
   }, [mintedInvite]);
 
+  const refreshPicker = useCallback(() => {
+    const el = inputRef.current;
+    if (!el) {
+      setPickerOpen(false);
+      return;
+    }
+    const cursor = el.selectionStart ?? 0;
+    const before = el.value.slice(0, cursor);
+    const atIdx = before.lastIndexOf("@");
+    if (atIdx === -1) {
+      setPickerOpen(false);
+      return;
+    }
+    const token = before.slice(atIdx + 1);
+    if (/\s/.test(token) || token.length > 32) {
+      setPickerOpen(false);
+      return;
+    }
+    setPickerQuery(token);
+    setPickerOpen(true);
+  }, []);
+
+  const pickLocation = useCallback(
+    (slug: LocationSlug) => {
+      const el = inputRef.current;
+      if (!el) return;
+      const loc = LOCATIONS.find((l) => l.slug === slug);
+      if (!loc) return;
+      const cursor = el.selectionStart ?? 0;
+      const before = el.value.slice(0, cursor);
+      const atIdx = before.lastIndexOf("@");
+      if (atIdx === -1) return;
+      const replacement = `@${loc.name} `;
+      const after = el.value.slice(cursor);
+      const next = el.value.slice(0, atIdx) + replacement + after;
+      const newCursor = atIdx + replacement.length;
+      setDraft(next);
+      setPickerOpen(false);
+      requestAnimationFrame(() => {
+        if (!inputRef.current) return;
+        inputRef.current.focus();
+        inputRef.current.setSelectionRange(newCursor, newCursor);
+      });
+    },
+    []
+  );
+
+  const handleRename = useCallback(async () => {
+    if (state.kind !== "ready") return;
+    const trimmed = nameDraft.trim();
+    if (!trimmed || trimmed === state.displayName) return;
+    setRenaming(true);
+    try {
+      const { error } = await supabase
+        .from("profiles")
+        .update({ display_name: trimmed })
+        .eq("id", state.userId);
+      if (error) {
+        window.alert(`Couldn't save name: ${error.message}`);
+        return;
+      }
+      setState({
+        kind: "ready",
+        church: state.church,
+        userId: state.userId,
+        role: state.role,
+        displayName: trimmed,
+      });
+    } finally {
+      setRenaming(false);
+    }
+  }, [state, nameDraft]);
+
   const handleSignOut = useCallback(async () => {
     await supabase.auth.signOut();
     router.replace("/login");
@@ -486,6 +616,22 @@ export default function ChurchChatPage() {
           <div className="flex items-center gap-2">
             <button
               type="button"
+              onClick={toggleMute}
+              title={
+                chatMuted
+                  ? "Chat pings muted (panic siren stays on)"
+                  : "Mute chat pings"
+              }
+              className={`rounded border px-2 py-1 text-xs ${
+                chatMuted
+                  ? "border-neutral-700 text-neutral-500"
+                  : "border-neutral-700 text-neutral-200"
+              }`}
+            >
+              {chatMuted ? "🔇" : "🔊"}
+            </button>
+            <button
+              type="button"
               onClick={async () => {
                 if (push !== "default") return;
                 const next = await enableNotifications({
@@ -517,7 +663,13 @@ export default function ChurchChatPage() {
             </button>
             <button
               type="button"
-              onClick={() => setProfileOpen((v) => !v)}
+              onClick={() => {
+                setProfileOpen((v) => {
+                  const opening = !v;
+                  if (opening) setNameDraft(state.displayName);
+                  return opening;
+                });
+              }}
               className="rounded border border-neutral-700 px-2 py-1 text-xs text-neutral-200"
             >
               Profile
@@ -533,10 +685,32 @@ export default function ChurchChatPage() {
         </div>
 
         {profileOpen && (
-          <div className="mt-3 flex flex-col gap-2 border-t border-neutral-800 pt-3 text-sm">
+          <div className="mt-3 flex flex-col gap-3 border-t border-neutral-800 pt-3 text-sm">
             <div className="text-xs uppercase text-neutral-500">
               {state.role}
             </div>
+            <label className="flex flex-col gap-1 text-xs text-neutral-400">
+              Display name
+              <div className="flex gap-2">
+                <input
+                  value={nameDraft}
+                  onChange={(e) => setNameDraft(e.target.value)}
+                  className="flex-1 rounded border border-neutral-700 bg-neutral-950 px-3 py-1.5 text-sm text-neutral-100"
+                />
+                <button
+                  type="button"
+                  onClick={handleRename}
+                  disabled={
+                    renaming ||
+                    !nameDraft.trim() ||
+                    nameDraft.trim() === state.displayName
+                  }
+                  className="rounded bg-neutral-700 px-3 py-1 text-xs text-neutral-100 disabled:opacity-50"
+                >
+                  {renaming ? "Saving…" : "Save"}
+                </button>
+              </div>
+            </label>
             <Link href="/home" className="text-sm text-red-400 underline">
               ← Back to home
             </Link>
@@ -644,13 +818,51 @@ export default function ChurchChatPage() {
           onSubmit={handleSend}
           className="mx-3 mt-3 flex flex-col gap-2 rounded border border-neutral-800 bg-neutral-900 p-3"
         >
-          <textarea
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-            placeholder={`Message ${channelLabel}… (type @ to tag a location)`}
-            rows={2}
-            className="resize-none bg-transparent text-base text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
-          />
+          <div className="relative">
+            <textarea
+              ref={inputRef}
+              value={draft}
+              onChange={(e) => {
+                setDraft(e.target.value);
+                refreshPicker();
+              }}
+              onKeyUp={refreshPicker}
+              onClick={refreshPicker}
+              onBlur={() =>
+                setTimeout(() => setPickerOpen(false), 100)
+              }
+              placeholder={`Message ${channelLabel}… (type @ to tag a location)`}
+              rows={2}
+              className="block w-full resize-none bg-transparent text-base text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
+            />
+            {pickerOpen &&
+              (() => {
+                const q = pickerQuery.toLowerCase();
+                const filtered = LOCATIONS.filter(
+                  (l) => q === "" || l.name.toLowerCase().includes(q)
+                );
+                if (filtered.length === 0) return null;
+                return (
+                  <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-y-auto rounded border border-neutral-700 bg-neutral-900 shadow-lg">
+                    {filtered.map((l) => (
+                      <li key={l.slug}>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            pickLocation(l.slug);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-neutral-100 hover:bg-neutral-800"
+                        >
+                          <span>📍</span>
+                          {l.name}
+                        </button>
+                      </li>
+                    ))}
+                  </ul>
+                );
+              })()}
+          </div>
           <div className="flex gap-2">
             <button
               type="submit"
@@ -785,7 +997,7 @@ export default function ChurchChatPage() {
                             : "text-neutral-200"
                       }`}
                     >
-                      {m.message}
+                      {renderMessageWithPills(m.message)}
                     </p>
                     {m.latitude != null && m.longitude != null && (
                       <div className="mt-2 flex flex-col gap-1">
@@ -820,18 +1032,38 @@ export default function ChurchChatPage() {
               })}
             </ul>
           )}
-          {messages.some(
-            (m) => m.is_alert && alertTone(m.message) === "panic"
-          ) && (
-            <button
-              type="button"
-              onClick={handleStandDown}
-              disabled={panicSending}
-              className="mt-4 w-full rounded border border-emerald-700/60 px-4 py-2 text-sm font-medium text-emerald-300 disabled:opacity-50"
-            >
-              Send Stand Down
-            </button>
-          )}
+          {(() => {
+            const lastPanic = messages.find(
+              (m) => m.is_alert && alertTone(m.message) === "panic"
+            );
+            if (!lastPanic) return null;
+            const elapsedMs =
+              Date.now() - new Date(lastPanic.created_at).getTime();
+            const minutes = Math.floor(elapsedMs / 60_000);
+            const elapsedLabel =
+              minutes < 1
+                ? "just now"
+                : minutes === 1
+                  ? "1 min ago"
+                  : `${minutes} min ago`;
+            return (
+              <div className="mt-4 flex flex-col gap-2 rounded border border-amber-700/50 bg-amber-950/30 p-3">
+                <p className="text-sm text-amber-200">
+                  Active panic from{" "}
+                  <span className="font-semibold">{lastPanic.sender_name}</span>{" "}
+                  · {elapsedLabel}
+                </p>
+                <button
+                  type="button"
+                  onClick={handleStandDown}
+                  disabled={panicSending}
+                  className="rounded border border-emerald-700/60 px-4 py-2 text-sm font-medium text-emerald-300 disabled:opacity-50"
+                >
+                  Send Stand Down
+                </button>
+              </div>
+            );
+          })()}
         </div>
       )}
 
@@ -867,6 +1099,49 @@ export default function ChurchChatPage() {
       </nav>
     </main>
   );
+}
+
+// Replace every @LocationName token (case-insensitive, full canonical name)
+// with a styled inline pill. Plain text segments between pills are kept
+// verbatim so whitespace and punctuation render unchanged.
+function renderMessageWithPills(text: string): React.ReactNode[] {
+  const sorted = [...LOCATIONS].sort(
+    (a, b) => b.name.length - a.name.length
+  );
+  const out: React.ReactNode[] = [];
+  let i = 0;
+  let buffer = "";
+  const flush = () => {
+    if (buffer) {
+      out.push(<span key={`t${out.length}`}>{buffer}</span>);
+      buffer = "";
+    }
+  };
+  while (i < text.length) {
+    if (text[i] === "@") {
+      const remaining = text.slice(i + 1).toLowerCase();
+      const match = sorted.find((l) =>
+        remaining.startsWith(l.name.toLowerCase())
+      );
+      if (match) {
+        flush();
+        out.push(
+          <span
+            key={`p${out.length}`}
+            className="inline-flex items-baseline gap-0.5 rounded bg-sky-900/40 px-1.5 py-0.5 align-baseline text-xs font-medium text-sky-200"
+          >
+            📍 {match.name}
+          </span>
+        );
+        i += 1 + match.name.length;
+        continue;
+      }
+    }
+    buffer += text[i];
+    i++;
+  }
+  flush();
+  return out;
 }
 
 function BottomTab({
