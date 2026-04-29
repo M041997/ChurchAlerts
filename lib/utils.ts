@@ -173,6 +173,29 @@ export async function bestPanicCoords(): Promise<
   return readLastKnownPos();
 }
 
+// Extract a human-readable message from anything `throw`n. Handles native
+// Error, Supabase PostgrestError / AuthError plain objects, and falls back
+// to a stringified form. Without this, a thrown PostgrestError shows up as
+// "[object Object]" because the object doesn't extend Error.
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  if (err && typeof err === "object") {
+    const obj = err as Record<string, unknown>;
+    if (typeof obj.message === "string" && obj.message.length > 0)
+      return obj.message;
+    if (typeof obj.error_description === "string")
+      return obj.error_description;
+    if (typeof obj.error === "string") return obj.error;
+    try {
+      const json = JSON.stringify(obj);
+      if (json && json !== "{}") return json;
+    } catch {
+      /* unstringifiable — fall through */
+    }
+  }
+  return String(err);
+}
+
 export function alertTone(message: string): "panic" | "standdown" | "beep" {
   if (/^PANIC\b/i.test(message)) return "panic";
   if (/^STAND DOWN\b/i.test(message)) return "standdown";

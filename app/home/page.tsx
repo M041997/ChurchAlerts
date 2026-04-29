@@ -4,6 +4,7 @@ import { useCallback, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
+import { errorMessage } from "@/lib/utils";
 import type { User } from "@supabase/supabase-js";
 
 type Profile = { id: string; display_name: string };
@@ -78,7 +79,7 @@ export default function HomePage() {
       setNewChurchName("");
       await refresh();
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     } finally {
       setCreating(false);
     }
@@ -96,7 +97,7 @@ export default function HomePage() {
       const url = `${window.location.origin}/join/${token}`;
       setMintedInvite({ churchId, url });
     } catch (err) {
-      setError(err instanceof Error ? err.message : String(err));
+      setError(errorMessage(err));
     }
   }
 
