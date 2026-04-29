@@ -4,13 +4,15 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
-import { formatTimestamp } from "@/lib/utils";
+import { alertTone, formatTimestamp } from "@/lib/utils";
+import { allClearUrl, chatPingUrl, play, sirenUrl } from "@/lib/audio";
 
 type Message = {
   id: string;
   church_id: string;
   message: string;
   sender_name: string;
+  sender_id: string | null;
   is_alert: boolean;
   created_at: string;
 };
@@ -29,6 +31,7 @@ export default function ChurchChatPage() {
   const [messages, setMessages] = useState<Message[]>([]);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [panicSending, setPanicSending] = useState(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
@@ -76,7 +79,7 @@ export default function ChurchChatPage() {
 
       const { data: existing } = await supabase
         .from("alerts")
-        .select("id, church_id, message, sender_name, is_alert, created_at")
+        .select("id, church_id, message, sender_name, sender_id, is_alert, created_at")
         .eq("church_id", churchId)
         .order("created_at", { ascending: false })
         .limit(200)
@@ -106,9 +109,20 @@ export default function ChurchChatPage() {
         },
         (payload) => {
           const row = payload.new as Message;
-          setMessages((prev) =>
-            prev.some((m) => m.id === row.id) ? prev : [row, ...prev]
-          );
+          setMessages((prev) => {
+            if (prev.some((m) => m.id === row.id)) return prev;
+            const ownMessage =
+              state.kind === "ready" && row.sender_id === state.userId;
+            if (row.is_alert) {
+              const tone = alertTone(row.message);
+              if (tone === "panic") play(sirenUrl());
+              else if (tone === "standdown") play(allClearUrl());
+              else play(sirenUrl());
+            } else if (!ownMessage) {
+              play(chatPingUrl());
+            }
+            return [row, ...prev];
+          });
         }
       )
       .subscribe();
@@ -147,6 +161,38 @@ export default function ChurchChatPage() {
     [draft, churchId, state]
   );
 
+  const handlePanic = useCallback(
+    async (kind: "panic" | "standdown") => {
+      if (state.kind !== "ready") return;
+      const message =
+        kind === "panic"
+          ? "PANIC — emergency help needed"
+          : "STAND DOWN — false alarm, all clear";
+      if (
+        !window.confirm(
+          kind === "panic"
+            ? "Send PANIC alert to everyone in this church?"
+            : "Send STAND DOWN to clear the alert?"
+        )
+      )
+        return;
+      setPanicSending(true);
+      try {
+        const { error } = await supabase.from("alerts").insert({
+          church_id: churchId,
+          message,
+          sender_name: state.displayName,
+          sender_id: state.userId,
+          is_alert: true,
+        });
+        if (error) window.alert(`Could not send: ${error.message}`);
+      } finally {
+        setPanicSending(false);
+      }
+    },
+    [churchId, state]
+  );
+
   if (state.kind === "loading") {
     return (
       <main className="flex min-h-full items-center justify-center text-sm text-gray-500">
@@ -177,6 +223,25 @@ export default function ChurchChatPage() {
         <span className="text-xs text-gray-400">{state.displayName}</span>
       </header>
 
+      <div className="flex gap-2 border-b border-gray-200 px-4 py-3">
+        <button
+          type="button"
+          onClick={() => handlePanic("panic")}
+          disabled={panicSending}
+          className="flex-1 rounded bg-red-700 px-4 py-3 text-base font-bold uppercase tracking-wide text-white shadow-sm disabled:opacity-50"
+        >
+          🚨 Panic
+        </button>
+        <button
+          type="button"
+          onClick={() => handlePanic("standdown")}
+          disabled={panicSending}
+          className="rounded border border-gray-300 px-3 py-3 text-sm font-medium text-gray-700 disabled:opacity-50"
+        >
+          Stand down
+        </button>
+      </div>
+
       <div ref={scrollerRef} className="flex-1 overflow-y-auto px-4 py-3">
         {messages.length === 0 ? (
           <p className="py-8 text-center text-sm text-gray-400">
@@ -184,17 +249,36 @@ export default function ChurchChatPage() {
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
-            {messages.map((m) => (
-              <li key={m.id} className="flex flex-col">
-                <div className="flex items-baseline gap-2">
-                  <span className="text-sm font-medium">{m.sender_name}</span>
-                  <span className="text-xs text-gray-400">
-                    {formatTimestamp(m.created_at)}
-                  </span>
-                </div>
-                <p className="text-sm">{m.message}</p>
-              </li>
-            ))}
+            {messages.map((m) => {
+              const tone = m.is_alert ? alertTone(m.message) : null;
+              const alertClass =
+                tone === "panic"
+                  ? "rounded border border-red-300 bg-red-50 p-2"
+                  : tone === "standdown"
+                    ? "rounded border border-emerald-300 bg-emerald-50 p-2"
+                    : "";
+              return (
+                <li key={m.id} className={`flex flex-col ${alertClass}`}>
+                  <div className="flex items-baseline gap-2">
+                    <span className="text-sm font-medium">{m.sender_name}</span>
+                    <span className="text-xs text-gray-400">
+                      {formatTimestamp(m.created_at)}
+                    </span>
+                  </div>
+                  <p
+                    className={
+                      tone === "panic"
+                        ? "text-sm font-semibold text-red-800"
+                        : tone === "standdown"
+                          ? "text-sm font-semibold text-emerald-800"
+                          : "text-sm"
+                    }
+                  >
+                    {m.message}
+                  </p>
+                </li>
+              );
+            })}
           </ul>
         )}
       </div>
