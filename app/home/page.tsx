@@ -235,6 +235,14 @@ export default function HomePage() {
                         Mint invite link
                       </button>
                     )}
+                    {isAdmin && (
+                      <Link
+                        href={`/c/${m.church_id}/settings`}
+                        className="rounded border border-gray-300 px-3 py-1 text-sm"
+                      >
+                        Settings
+                      </Link>
+                    )}
                     <button
                       onClick={() => toggleMembers(m.church_id)}
                       className="rounded border border-gray-300 px-3 py-1 text-sm"

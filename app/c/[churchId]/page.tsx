@@ -5,11 +5,10 @@ import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import {
   supabase,
-  TEAMS,
-  LOCATIONS,
-  isTeamSlug,
   CHAT_MUTED_KEY,
+  type Team,
   type TeamSlug,
+  type Location,
   type LocationSlug,
 } from "@/lib/supabase";
 import {
@@ -68,6 +67,8 @@ export default function ChurchChatPage() {
   const [memberTeams, setMemberTeams] = useState<Record<string, TeamSlug[]>>(
     {}
   );
+  const [churchTeams, setChurchTeams] = useState<Team[]>([]);
+  const [churchLocations, setChurchLocations] = useState<Location[]>([]);
   const [activeTeamIdx, setActiveTeamIdx] = useState(0);
   const [viewMode, setViewMode] = useState<ViewMode>("everyone");
   const [draft, setDraft] = useState("");
@@ -136,25 +137,44 @@ export default function ChurchChatPage() {
         return;
       }
 
-      const [{ data: profile }, { data: membership }, { data: church }] =
-        await Promise.all([
-          supabase
-            .from("profiles")
-            .select("display_name")
-            .eq("id", userData.user.id)
-            .maybeSingle<{ display_name: string }>(),
-          supabase
-            .from("church_members")
-            .select("role, joined_teams")
-            .eq("user_id", userData.user.id)
-            .eq("church_id", churchId)
-            .maybeSingle<{ role: Role; joined_teams: string[] }>(),
-          supabase
-            .from("churches")
-            .select("id, name")
-            .eq("id", churchId)
-            .maybeSingle<Church>(),
-        ]);
+      const [
+        { data: profile },
+        { data: membership },
+        { data: church },
+        { data: teamRows },
+        { data: locationRows },
+      ] = await Promise.all([
+        supabase
+          .from("profiles")
+          .select("display_name")
+          .eq("id", userData.user.id)
+          .maybeSingle<{ display_name: string }>(),
+        supabase
+          .from("church_members")
+          .select("role, joined_teams")
+          .eq("user_id", userData.user.id)
+          .eq("church_id", churchId)
+          .maybeSingle<{ role: Role; joined_teams: string[] }>(),
+        supabase
+          .from("churches")
+          .select("id, name")
+          .eq("id", churchId)
+          .maybeSingle<Church>(),
+        supabase
+          .from("church_teams")
+          .select("slug, name, sort_order")
+          .eq("church_id", churchId)
+          .order("sort_order")
+          .order("name")
+          .returns<Team[]>(),
+        supabase
+          .from("church_locations")
+          .select("slug, name, latitude, longitude, sort_order")
+          .eq("church_id", churchId)
+          .order("sort_order")
+          .order("name")
+          .returns<Location[]>(),
+      ]);
       if (cancelled) return;
 
       if (!church) {
@@ -169,8 +189,15 @@ export default function ChurchChatPage() {
         return;
       }
       const displayName = profile?.display_name ?? userData.user.email ?? "User";
-      const teams = (membership.joined_teams ?? []).filter(isTeamSlug);
-      setJoinedTeams(teams);
+      const teams = teamRows ?? [];
+      const locations = locationRows ?? [];
+      setChurchTeams(teams);
+      setChurchLocations(locations);
+      const teamSlugs = new Set(teams.map((t) => t.slug));
+      const joined = (membership.joined_teams ?? []).filter((s) =>
+        teamSlugs.has(s)
+      );
+      setJoinedTeams(joined);
 
       const { data: allMembers } = await supabase
         .from("church_members")
@@ -180,7 +207,9 @@ export default function ChurchChatPage() {
       if (cancelled) return;
       const teamsByUser: Record<string, TeamSlug[]> = {};
       for (const row of allMembers ?? []) {
-        teamsByUser[row.user_id] = (row.joined_teams ?? []).filter(isTeamSlug);
+        teamsByUser[row.user_id] = (row.joined_teams ?? []).filter((s) =>
+          teamSlugs.has(s)
+        );
       }
       setMemberTeams(teamsByUser);
 
@@ -295,7 +324,7 @@ export default function ChurchChatPage() {
     viewMode === "team" && activeTeam ? activeTeam : null;
   const channelLabel =
     viewMode === "team" && activeTeam
-      ? TEAMS.find((t) => t.slug === activeTeam)?.name ?? activeTeam
+      ? churchTeams.find((t) => t.slug === activeTeam)?.name ?? activeTeam
       : "Everyone";
 
   const insertMessage = useCallback(
@@ -307,9 +336,9 @@ export default function ChurchChatPage() {
     }): Promise<boolean> => {
       if (state.kind !== "ready") return false;
       const coords = opts.attachGps ? await bestPanicCoords() : null;
-      const explicit = detectLocationInText(opts.message);
+      const explicit = detectLocationInText(opts.message, churchLocations);
       const fromGps = coords
-        ? nearestLocationTo(coords.latitude, coords.longitude)
+        ? nearestLocationTo(coords.latitude, coords.longitude, churchLocations)
         : null;
       const location = explicit ?? fromGps;
       const { data: inserted, error } = await supabase
@@ -341,7 +370,7 @@ export default function ChurchChatPage() {
       }
       return true;
     },
-    [churchId, state]
+    [churchId, state, churchLocations]
   );
 
   const handleSend = useCallback(
@@ -373,7 +402,7 @@ export default function ChurchChatPage() {
     }
     const targetName =
       sendTeamSlug
-        ? TEAMS.find((t) => t.slug === sendTeamSlug)?.name ?? sendTeamSlug
+        ? churchTeams.find((t) => t.slug === sendTeamSlug)?.name ?? sendTeamSlug
         : "everyone";
     if (!window.confirm(`Send team alert to ${targetName}?`)) return;
     setPanicSending(true);
@@ -518,7 +547,7 @@ export default function ChurchChatPage() {
     (slug: LocationSlug) => {
       const el = inputRef.current;
       if (!el) return;
-      const loc = LOCATIONS.find((l) => l.slug === slug);
+      const loc = churchLocations.find((l) => l.slug === slug);
       if (!loc) return;
       const cursor = el.selectionStart ?? 0;
       const before = el.value.slice(0, cursor);
@@ -616,7 +645,7 @@ export default function ChurchChatPage() {
     );
   }
 
-  const otherTeams = TEAMS.filter((t) => !joinedTeams.includes(t.slug));
+  const otherTeams = churchTeams.filter((t) => !joinedTeams.includes(t.slug));
   const showChat = viewMode === "team" || viewMode === "everyone";
 
   return (
@@ -744,6 +773,12 @@ export default function ChurchChatPage() {
             </Link>
             {state.role === "owner" && (
               <>
+                <Link
+                  href={`/c/${churchId}/settings`}
+                  className="self-start text-sm text-red-400 underline"
+                >
+                  Edit teams &amp; locations →
+                </Link>
                 <button
                   type="button"
                   onClick={handleMintInvite}
@@ -815,7 +850,7 @@ export default function ChurchChatPage() {
           </button>
           <div className="flex-1 text-center">
             <div className="text-sm font-semibold">
-              {TEAMS.find((t) => t.slug === activeTeam)?.name}
+              {churchTeams.find((t) => t.slug === activeTeam)?.name}
             </div>
             <div className="text-xs text-neutral-500">
               {activeTeamIdx + 1} of {joinedTeams.length} team
@@ -866,7 +901,7 @@ export default function ChurchChatPage() {
             {pickerOpen &&
               (() => {
                 const q = pickerQuery.toLowerCase();
-                const filtered = LOCATIONS.filter(
+                const filtered = churchLocations.filter(
                   (l) => q === "" || l.name.toLowerCase().includes(q)
                 );
                 if (filtered.length === 0) return null;
@@ -944,7 +979,7 @@ export default function ChurchChatPage() {
               On {joinedTeams.length} team{joinedTeams.length === 1 ? "" : "s"}
               {": "}
               {joinedTeams
-                .map((s) => TEAMS.find((t) => t.slug === s)?.name)
+                .map((s) => churchTeams.find((t) => t.slug === s)?.name)
                 .join(", ")}
             </p>
           )}
@@ -966,17 +1001,17 @@ export default function ChurchChatPage() {
                     ? "rounded border border-red-700/60 bg-red-950/40 p-3"
                     : "rounded border border-emerald-700/50 bg-emerald-950/30 p-3"
                   : "rounded border border-neutral-800 bg-neutral-900 p-3";
-                const teamLabel =
-                  m.team_slug && isTeamSlug(m.team_slug)
-                    ? TEAMS.find((t) => t.slug === m.team_slug)?.name
-                    : null;
+                const teamLabel = m.team_slug
+                  ? churchTeams.find((t) => t.slug === m.team_slug)?.name ??
+                    m.team_slug
+                  : null;
                 const locationLabel = m.location
-                  ? LOCATIONS.find((l) => l.slug === m.location)?.name
+                  ? churchLocations.find((l) => l.slug === m.location)?.name
                   : null;
                 const senderTeamNames = (
                   m.sender_id ? memberTeams[m.sender_id] ?? [] : []
                 )
-                  .map((s) => TEAMS.find((t) => t.slug === s)?.name)
+                  .map((s) => churchTeams.find((t) => t.slug === s)?.name)
                   .filter((n): n is string => Boolean(n));
                 return (
                   <li key={m.id} className={`flex flex-col ${cardClass}`}>
@@ -1035,7 +1070,7 @@ export default function ChurchChatPage() {
                             : "text-neutral-200"
                       }`}
                     >
-                      {renderMessageWithPills(m.message)}
+                      {renderMessageWithPills(m.message, churchLocations)}
                     </p>
                     {m.latitude != null && m.longitude != null && (
                       <div className="mt-2 flex flex-col gap-1">
@@ -1112,7 +1147,7 @@ export default function ChurchChatPage() {
           active={viewMode === "team"}
           label={
             activeTeam
-              ? TEAMS.find((t) => t.slug === activeTeam)?.name ?? "Team"
+              ? churchTeams.find((t) => t.slug === activeTeam)?.name ?? "Team"
               : "Pick team"
           }
           onClick={() => {
@@ -1142,8 +1177,11 @@ export default function ChurchChatPage() {
 // Replace every @LocationName token (case-insensitive, full canonical name)
 // with a styled inline pill. Plain text segments between pills are kept
 // verbatim so whitespace and punctuation render unchanged.
-function renderMessageWithPills(text: string): React.ReactNode[] {
-  const sorted = [...LOCATIONS].sort(
+function renderMessageWithPills(
+  text: string,
+  locations: Location[]
+): React.ReactNode[] {
+  const sorted = [...locations].sort(
     (a, b) => b.name.length - a.name.length
   );
   const out: React.ReactNode[] = [];

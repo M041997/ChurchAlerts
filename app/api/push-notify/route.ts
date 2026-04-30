@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
 import { expandLocationTags, teamName } from "@/lib/utils";
+import type { Location, Team } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
@@ -61,6 +62,22 @@ export async function POST(request: Request) {
 
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
+  // Pull the church's team and location names so we can render a friendly
+  // notification title/body. These are per-church configurable now so we
+  // can't read them from a hardcoded constant.
+  const [{ data: teams }, { data: locations }] = await Promise.all([
+    supabase
+      .from("church_teams")
+      .select("slug, name, sort_order")
+      .eq("church_id", alert.church_id)
+      .returns<Team[]>(),
+    supabase
+      .from("church_locations")
+      .select("slug, name, latitude, longitude, sort_order")
+      .eq("church_id", alert.church_id)
+      .returns<Location[]>(),
+  ]);
+
   // Find subscriptions to notify: same church, excluding sender by user_id
   // (more robust than name), filtered by team membership.
   let query = supabase
@@ -87,9 +104,11 @@ export async function POST(request: Request) {
   }
 
   const isPanic = alert.team_slug === null && alert.is_alert;
-  const channel = alert.team_slug ? teamName(alert.team_slug) : "Everyone";
+  const channel = alert.team_slug
+    ? teamName(alert.team_slug, teams ?? [])
+    : "Everyone";
   const title = `🚨 ${alert.sender_name} · ${channel}`;
-  const pushBody = buildNotifBody(alert);
+  const pushBody = buildNotifBody(alert, locations ?? []);
 
   const payload = JSON.stringify({
     title,
@@ -131,8 +150,8 @@ export async function POST(request: Request) {
   return Response.json({ sent, failed, pruned: deadEndpoints.length });
 }
 
-function buildNotifBody(alert: AlertRow): string {
-  let text = expandLocationTags(alert.message);
+function buildNotifBody(alert: AlertRow, locations: Location[]): string {
+  let text = expandLocationTags(alert.message, locations);
   if (alert.latitude != null && alert.longitude != null) {
     text += ` · GPS attached`;
   }

@@ -107,6 +107,30 @@ create table if not exists public.invites (
   created_at timestamptz not null default now()
 );
 
+-- Per-church configurable teams and locations. Replaces the hardcoded
+-- TEAMS / LOCATIONS arrays in lib/supabase.ts. The slug stays stable so
+-- alerts.team_slug and alerts.location values keep resolving even after
+-- a rename; only `name`, GPS, and sort_order are admin-editable.
+create table if not exists public.church_teams (
+  church_id uuid not null references public.churches(id) on delete cascade,
+  slug text not null check (length(slug) between 1 and 64),
+  name text not null check (length(name) between 1 and 100),
+  sort_order integer not null default 100,
+  created_at timestamptz not null default now(),
+  primary key (church_id, slug)
+);
+
+create table if not exists public.church_locations (
+  church_id uuid not null references public.churches(id) on delete cascade,
+  slug text not null check (length(slug) between 1 and 64),
+  name text not null check (length(name) between 1 and 100),
+  latitude double precision,
+  longitude double precision,
+  sort_order integer not null default 100,
+  created_at timestamptz not null default now(),
+  primary key (church_id, slug)
+);
+
 -- ============================================================
 -- 2. FK constraints that depend on profiles existing
 -- ============================================================
@@ -145,6 +169,10 @@ create index if not exists church_members_user_idx
   on public.church_members (user_id);
 create index if not exists invites_church_idx
   on public.invites (church_id);
+create index if not exists church_teams_order_idx
+  on public.church_teams (church_id, sort_order, name);
+create index if not exists church_locations_order_idx
+  on public.church_locations (church_id, sort_order, name);
 
 -- ============================================================
 -- 4. Demo seed + realtime publication
@@ -228,6 +256,8 @@ alter table public.push_subscriptions enable row level security;
 alter table public.profiles enable row level security;
 alter table public.church_members enable row level security;
 alter table public.invites enable row level security;
+alter table public.church_teams enable row level security;
+alter table public.church_locations enable row level security;
 
 -- churches: anyone can read church names (used by /join/<token> preview).
 drop policy if exists "poc_groups_select" on public.churches;
@@ -315,11 +345,71 @@ drop policy if exists "invites_token_preview" on public.invites;
 create policy "invites_token_preview" on public.invites
   for select to anon, authenticated using (true);
 
+-- church_teams and church_locations: any member of the church can read
+-- (the chat needs them to render messages and the @-picker). Owners
+-- have full read/write to add/edit/remove.
+drop policy if exists "church_teams_member_select" on public.church_teams;
+create policy "church_teams_member_select" on public.church_teams
+  for select to authenticated using (public.is_member_of(church_id));
+
+drop policy if exists "church_teams_owner_rw" on public.church_teams;
+create policy "church_teams_owner_rw" on public.church_teams
+  for all to authenticated
+  using (public.is_owner_of(church_id))
+  with check (public.is_owner_of(church_id));
+
+drop policy if exists "church_locations_member_select" on public.church_locations;
+create policy "church_locations_member_select" on public.church_locations
+  for select to authenticated using (public.is_member_of(church_id));
+
+drop policy if exists "church_locations_owner_rw" on public.church_locations;
+create policy "church_locations_owner_rw" on public.church_locations
+  for all to authenticated
+  using (public.is_owner_of(church_id))
+  with check (public.is_owner_of(church_id));
+
 -- ============================================================
 -- 7. RPC functions
 -- ============================================================
 
--- create_church: caller becomes the owner of a freshly-created church.
+-- seed_church_defaults: drops a sane starter set of teams and
+-- locations onto a freshly-created (or empty) church. Called by
+-- create_church and also by the backfill at the bottom of this file
+-- so existing churches that pre-date these tables get populated.
+create or replace function public.seed_church_defaults(p_church_id uuid)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+begin
+  insert into public.church_teams (church_id, slug, name, sort_order) values
+    (p_church_id, 'worship', 'Worship', 10),
+    (p_church_id, 'ushers', 'Ushers', 20),
+    (p_church_id, 'greeters', 'Greeters', 30),
+    (p_church_id, 'kids', 'Kids', 40),
+    (p_church_id, 'youth', 'Youth', 50),
+    (p_church_id, 'media', 'Media / AV', 60),
+    (p_church_id, 'security', 'Security', 70),
+    (p_church_id, 'hospitality', 'Hospitality', 80),
+    (p_church_id, 'prayer', 'Prayer', 90)
+  on conflict (church_id, slug) do nothing;
+
+  insert into public.church_locations (church_id, slug, name, sort_order) values
+    (p_church_id, 'main_sanctuary', 'Main Sanctuary', 10),
+    (p_church_id, 'main_sanctuary_entrance', 'Main Sanctuary Entrance', 20),
+    (p_church_id, 'fellowship_hall', 'Fellowship Hall', 30),
+    (p_church_id, 'kids_sanctuary', 'Kids Sanctuary', 40),
+    (p_church_id, 'parking_lot_front', 'Parking Lot Front', 50),
+    (p_church_id, 'parking_lot_back', 'Parking Lot Back', 60)
+  on conflict (church_id, slug) do nothing;
+end;
+$$;
+
+grant execute on function public.seed_church_defaults(uuid) to authenticated;
+
+-- create_church: caller becomes the owner of a freshly-created church
+-- and the church gets the default teams and locations.
 create or replace function public.create_church(church_name text)
 returns uuid
 language plpgsql
@@ -343,6 +433,8 @@ begin
 
   insert into public.church_members (user_id, church_id, role)
     values (v_user, v_church_id, 'owner');
+
+  perform public.seed_church_defaults(v_church_id);
 
   return v_church_id;
 end;
@@ -517,3 +609,18 @@ select
 from auth.users u
 left join public.profiles p on p.id = u.id
 where p.id is null;
+
+-- Backfill: any existing church without teams/locations rows (i.e.
+-- churches that pre-date these tables) gets the default seed.
+do $$
+declare
+  c record;
+begin
+  for c in select id from public.churches loop
+    if not exists (
+      select 1 from public.church_teams where church_id = c.id limit 1
+    ) then
+      perform public.seed_church_defaults(c.id);
+    end if;
+  end loop;
+end $$;

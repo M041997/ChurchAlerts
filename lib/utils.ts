@@ -1,10 +1,4 @@
-import {
-  LOCATIONS,
-  TEAMS,
-  type Location,
-  type LocationSlug,
-  type TeamSlug,
-} from "./supabase";
+import type { Location, LocationSlug, Team, TeamSlug } from "./supabase";
 
 export function formatTimestamp(iso: string): string {
   const d = new Date(iso);
@@ -24,20 +18,36 @@ export function formatTimestamp(iso: string): string {
 
 // First @-tagged location whose canonical name appears in the text
 // (case-insensitive, requires the full name with internal spaces).
-export function detectLocationInText(text: string): LocationSlug | null {
+// Locations are now per-church, so the caller passes the relevant set.
+export function detectLocationInText(
+  text: string,
+  locations: Location[]
+): LocationSlug | null {
   const lower = text.toLowerCase();
-  for (const l of LOCATIONS) {
+  // Match longer names first so "@Main Sanctuary Entrance" doesn't get
+  // truncated to a "@Main Sanctuary" match.
+  const sorted = [...locations].sort(
+    (a, b) => b.name.length - a.name.length
+  );
+  for (const l of sorted) {
     if (lower.includes(`@${l.name.toLowerCase()}`)) return l.slug;
   }
   return null;
 }
 
-// Replace every "@LocName" (case-insensitive) with "📍 LocName" using the
-// canonical capitalization. Used for push notification bodies and any other
-// text-only renderings where we can't render a styled inline pill.
-export function expandLocationTags(text: string): string {
+// Replace every "@LocName" (case-insensitive) with "📍 LocName" using
+// the canonical capitalization. Used for push notification bodies and
+// any other text-only renderings where we can't render a styled inline
+// pill.
+export function expandLocationTags(
+  text: string,
+  locations: Location[]
+): string {
   let out = text;
-  for (const l of LOCATIONS) {
+  const sorted = [...locations].sort(
+    (a, b) => b.name.length - a.name.length
+  );
+  for (const l of sorted) {
     const needle = `@${l.name}`;
     const lowerNeedle = needle.toLowerCase();
     let lower = out.toLowerCase();
@@ -214,8 +224,8 @@ export function alertTone(message: string): "panic" | "standdown" | "beep" {
   return "beep";
 }
 
-export function teamName(slug: TeamSlug | string): string {
-  const t = TEAMS.find((x) => x.slug === slug);
+export function teamName(slug: TeamSlug | string, teams: Team[]): string {
+  const t = teams.find((x) => x.slug === slug);
   return t ? t.name : slug;
 }
 
@@ -227,7 +237,7 @@ export function teamName(slug: TeamSlug | string): string {
 export function nearestLocationTo(
   lat: number,
   lng: number,
-  locations: Location[] = LOCATIONS,
+  locations: Location[],
   maxMeters: number = 500
 ): LocationSlug | null {
   let best: { slug: LocationSlug; meters: number } | null = null;
