@@ -295,6 +295,13 @@ create policy "members_self_update" on public.church_members
   using (user_id = auth.uid())
   with check (user_id = auth.uid());
 
+-- Admins of a church can remove any member of that church. Used by the
+-- /home Members section. Members cannot self-delete via this policy —
+-- they leave a church via a separate flow (not yet built).
+drop policy if exists "members_owner_delete" on public.church_members;
+create policy "members_owner_delete" on public.church_members
+  for delete to authenticated using (public.is_owner_of(church_id));
+
 -- invites: owners read/write invites for their church. Anyone holding
 -- the token can SELECT the row to preview the church before signing up
 -- (the token itself is the secret).
@@ -423,6 +430,44 @@ end;
 $$;
 
 grant execute on function public.redeem_invite(text) to authenticated;
+
+-- promote_member: admin elevates an existing member to owner. There can
+-- be more than one owner per church.
+create or replace function public.promote_member(
+  p_user_id uuid,
+  p_church_id uuid
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_user uuid := auth.uid();
+begin
+  if v_user is null then
+    raise exception 'not authenticated';
+  end if;
+  if not exists (
+    select 1 from public.church_members
+    where user_id = v_user and church_id = p_church_id and role = 'owner'
+  ) then
+    raise exception 'not an owner of this church';
+  end if;
+  if not exists (
+    select 1 from public.church_members
+    where user_id = p_user_id and church_id = p_church_id
+  ) then
+    raise exception 'target user is not a member of this church';
+  end if;
+
+  update public.church_members
+    set role = 'owner'
+    where user_id = p_user_id and church_id = p_church_id;
+end;
+$$;
+
+grant execute on function public.promote_member(uuid, uuid) to authenticated;
 
 -- ============================================================
 -- 8. Auto-create a profile row when a new auth user signs up.
