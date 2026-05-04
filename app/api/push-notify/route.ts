@@ -112,7 +112,7 @@ export async function POST(request: Request) {
     body: pushBody,
     tag: `${tagPrefix}-${alert.id}`,
     isPanic,
-    url: "/",
+    url: `/c/${alert.church_id}`,
   });
 
   const deadEndpoints: string[] = [];

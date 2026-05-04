@@ -82,14 +82,23 @@ export default function ChurchChatPage() {
   const [inviteCopied, setInviteCopied] = useState(false);
   const [gpsBlocked, setGpsBlocked] = useState(false);
   const [chatMuted, setChatMuted] = useState(false);
+  const [fixAccuracy, setFixAccuracy] = useState<number | null>(null);
   const chatMutedRef = useRef(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
   // IDs of messages that just arrived via realtime — used to flash a
-  // highlight ring for ~3.5s. Senders' own messages are excluded.
+  // highlight ring for ~3.5s. Includes own sends so solo-testing shows
+  // the glow too.
   const [highlightIds, setHighlightIds] = useState<Set<string>>(new Set());
+  // Unread counters per chat tab. Cleared when the user switches into
+  // that tab. Alerts are excluded — they show in every view.
+  const [teamUnread, setTeamUnread] = useState(0);
+  const [everyoneUnread, setEveryoneUnread] = useState(0);
+  const viewModeRef = useRef<ViewMode>("everyone");
+  const activeTeamRef = useRef<TeamSlug | null>(null);
+  const joinedTeamsRef = useRef<TeamSlug[]>([]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -116,7 +125,7 @@ export default function ChurchChatPage() {
     setPush(pushSupportInitial());
     registerServiceWorker();
     primeGeolocation();
-    const stopWatch = startGeoWatch();
+    const stopWatch = startGeoWatch((fix) => setFixAccuracy(fix.accuracy));
     if (typeof navigator !== "undefined" && navigator.permissions) {
       navigator.permissions
         .query({ name: "geolocation" as PermissionName })
@@ -315,20 +324,35 @@ export default function ChurchChatPage() {
                 }
               }
             }
-            if (!ownMessage) {
+            setHighlightIds((s) => {
+              const next = new Set(s);
+              next.add(row.id);
+              return next;
+            });
+            window.setTimeout(() => {
               setHighlightIds((s) => {
+                if (!s.has(row.id)) return s;
                 const next = new Set(s);
-                next.add(row.id);
+                next.delete(row.id);
                 return next;
               });
-              window.setTimeout(() => {
-                setHighlightIds((s) => {
-                  if (!s.has(row.id)) return s;
-                  const next = new Set(s);
-                  next.delete(row.id);
-                  return next;
-                });
-              }, 3500);
+            }, 3500);
+            if (!ownMessage && !row.is_alert) {
+              const isTeamMsg =
+                row.team_slug !== null &&
+                joinedTeamsRef.current.includes(row.team_slug);
+              const isEveryoneMsg = row.team_slug === null;
+              const onTeamChannel =
+                viewModeRef.current === "team" &&
+                row.team_slug !== null &&
+                row.team_slug === activeTeamRef.current;
+              const onEveryoneChannel =
+                viewModeRef.current === "everyone" && isEveryoneMsg;
+              if (isTeamMsg && !onTeamChannel) {
+                setTeamUnread((n) => n + 1);
+              } else if (isEveryoneMsg && !onEveryoneChannel) {
+                setEveryoneUnread((n) => n + 1);
+              }
             }
             return [row, ...prev];
           });
@@ -348,6 +372,19 @@ export default function ChurchChatPage() {
 
   const activeTeam: TeamSlug | null =
     joinedTeams.length > 0 ? joinedTeams[activeTeamIdx % joinedTeams.length] : null;
+
+  useEffect(() => {
+    viewModeRef.current = viewMode;
+    if (viewMode === "team") setTeamUnread(0);
+    if (viewMode === "everyone") setEveryoneUnread(0);
+  }, [viewMode]);
+  useEffect(() => {
+    activeTeamRef.current = activeTeam;
+    if (viewMode === "team") setTeamUnread(0);
+  }, [activeTeam, viewMode]);
+  useEffect(() => {
+    joinedTeamsRef.current = joinedTeams;
+  }, [joinedTeams]);
 
   const sendTeamSlug: TeamSlug | null =
     viewMode === "team" && activeTeam ? activeTeam : null;
@@ -691,6 +728,14 @@ export default function ChurchChatPage() {
       >
         🚨 PANIC — CHURCH-WIDE ALERT
       </button>
+
+      {fixAccuracy != null && fixAccuracy > 200 && (
+        <p className="mx-3 mt-2 rounded border border-amber-700/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+          GPS fix is ±{formatAccuracy(fixAccuracy)} — alerts may show the
+          wrong block. iPhone: Settings → this app → Location →
+          <strong> Precise Location ON</strong>, then go near a window.
+        </p>
+      )}
 
       <div className="relative mx-3 mt-3 rounded border border-neutral-800 bg-neutral-900 px-4 py-3">
         <div className="flex items-center justify-between gap-2">
@@ -1198,6 +1243,7 @@ export default function ChurchChatPage() {
             }
           }}
           highlight
+          unread={teamUnread}
         />
         <BottomTab
           active={viewMode === "join-list"}
@@ -1208,6 +1254,7 @@ export default function ChurchChatPage() {
           active={viewMode === "everyone"}
           label="Everyone"
           onClick={() => setViewMode("everyone")}
+          unread={everyoneUnread}
         />
       </nav>
     </main>
@@ -1260,22 +1307,29 @@ function renderMessageWithPills(
   return out;
 }
 
+function formatAccuracy(meters: number): string {
+  if (meters >= 1000) return `${(meters / 1000).toFixed(1)}km`;
+  return `${Math.round(meters)}m`;
+}
+
 function BottomTab({
   active,
   label,
   onClick,
   highlight,
+  unread,
 }: {
   active: boolean;
   label: string;
   onClick: () => void;
   highlight?: boolean;
+  unread?: number;
 }) {
   return (
     <button
       type="button"
       onClick={onClick}
-      className={`flex-1 px-4 py-3 text-center text-sm ${
+      className={`relative flex-1 px-4 py-3 text-center text-sm ${
         active
           ? highlight
             ? "font-semibold text-emerald-400"
@@ -1283,7 +1337,14 @@ function BottomTab({
           : "text-neutral-500"
       }`}
     >
-      {label}
+      <span className="inline-flex items-center gap-1.5">
+        {label}
+        {unread && unread > 0 ? (
+          <span className="inline-flex min-w-[1.25rem] items-center justify-center rounded-full bg-emerald-600 px-1.5 py-0.5 text-[10px] font-semibold leading-none text-white">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        ) : null}
+      </span>
     </button>
   );
 }

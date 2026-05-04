@@ -35,11 +35,32 @@ self.addEventListener("notificationclick", (event) => {
   event.notification.close();
   const targetUrl = (event.notification.data && event.notification.data.url) || "/";
   event.waitUntil(
-    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((windowClients) => {
-      for (const client of windowClients) {
-        if ("focus" in client) return client.focus();
-      }
-      if (self.clients.openWindow) return self.clients.openWindow(targetUrl);
-    })
+    self.clients
+      .matchAll({ type: "window", includeUncontrolled: true })
+      .then((windowClients) => {
+        const target = new URL(targetUrl, self.location.origin);
+        // Prefer a tab already on the right URL.
+        for (const client of windowClients) {
+          try {
+            const url = new URL(client.url);
+            if (url.pathname === target.pathname) return client.focus();
+          } catch {
+            /* unparseable URL — skip */
+          }
+        }
+        // Otherwise focus any tab and navigate it to the target URL.
+        for (const client of windowClients) {
+          if ("focus" in client) {
+            const focused = client.focus();
+            if ("navigate" in client) {
+              return Promise.resolve(focused).then(() =>
+                client.navigate(target.href).catch(() => focused)
+              );
+            }
+            return focused;
+          }
+        }
+        if (self.clients.openWindow) return self.clients.openWindow(target.href);
+      })
   );
 });

@@ -61,46 +61,55 @@ export function expandLocationTags(
   return out;
 }
 
-// Capture a current GPS fix with a hard deadline. Resolves to null if the
-// browser refuses, the user denies, or the satellite lock takes too long.
-// Panic buttons can't wait — better to ship the alert without coords than
-// to hang the UI for 30s waiting on a slow fix.
-export async function getQuickPosition(
-  timeoutMs = 5000,
-  maxCacheAgeMs = 60_000
-): Promise<{ latitude: number; longitude: number } | null> {
+export type Fix = { latitude: number; longitude: number; accuracy: number };
+
+// Capture the best GPS fix the browser can give us before the deadline.
+// Uses watchPosition (not getCurrentPosition) so we get *successive*
+// improving fixes — the first callback is often the cached Wi-Fi/IP
+// triangulation (~1-5km radius); the GPS chip then narrows it down.
+// Resolves early once we beat `minAccuracyM`.
+export async function getBestPosition(
+  timeoutMs = 8000,
+  minAccuracyM = 50
+): Promise<Fix | null> {
   if (typeof navigator === "undefined" || !navigator.geolocation) return null;
   return new Promise((resolve) => {
+    let best: Fix | null = null;
     let done = false;
-    const finish = (value: { latitude: number; longitude: number } | null) => {
+    let watchId: number | null = null;
+    const finish = () => {
       if (done) return;
       done = true;
-      resolve(value);
+      if (watchId !== null) {
+        try {
+          navigator.geolocation.clearWatch(watchId);
+        } catch {
+          /* already cleared */
+        }
+      }
+      resolve(best);
     };
-    const timer = setTimeout(() => finish(null), timeoutMs);
-    navigator.geolocation.getCurrentPosition(
+    watchId = navigator.geolocation.watchPosition(
       (pos) => {
-        clearTimeout(timer);
-        finish({
+        const fix: Fix = {
           latitude: pos.coords.latitude,
           longitude: pos.coords.longitude,
-        });
+          accuracy: pos.coords.accuracy,
+        };
+        if (!best || fix.accuracy < best.accuracy) best = fix;
+        if (fix.accuracy <= minAccuracyM) finish();
       },
-      () => {
-        clearTimeout(timer);
-        finish(null);
-      },
-      {
-        enableHighAccuracy: true,
-        timeout: Math.max(500, timeoutMs - 100),
-        maximumAge: maxCacheAgeMs,
-      }
+      () => finish(),
+      { enableHighAccuracy: true, timeout: timeoutMs, maximumAge: 0 }
     );
+    setTimeout(finish, timeoutMs);
   });
 }
 
-// Background-warm the browser's geolocation cache so the next
-// getQuickPosition() call has a recent fix sitting in maximumAge.
+// Background-warm the browser's geolocation hardware so the next
+// getBestPosition() call has the GPS chip already powered on. We don't
+// rely on the result here — startGeoWatch is what actually populates
+// the cache.
 export function primeGeolocation(): void {
   if (typeof navigator === "undefined" || !navigator.geolocation) return;
   navigator.geolocation.getCurrentPosition(
@@ -111,11 +120,19 @@ export function primeGeolocation(): void {
 }
 
 const LAST_POS_KEY = "church-alert:lastPos";
-type StoredPos = { latitude: number; longitude: number; ts: number };
+type StoredPos = {
+  latitude: number;
+  longitude: number;
+  accuracy: number;
+  ts: number;
+};
 
 // Cap the fallback at this age — better to send no coords than coords from
 // before the user moved across town.
 const STALE_AFTER_MS = 10 * 60 * 1000;
+// Don't cache a fix worse than this — keeps Wi-Fi triangulation garbage
+// (~1-5km radius) out of the localStorage fallback.
+const CACHE_MAX_ACCURACY_M = 200;
 
 export function readLastKnownPos(): StoredPos | null {
   if (typeof window === "undefined") return null;
@@ -146,23 +163,32 @@ function writeLastKnownPos(pos: StoredPos) {
 }
 
 // Keep a live GPS watch open while the chat is mounted, persisting every
-// fresh fix to localStorage. This way a panic can always fall back to the
-// most-recent-known coordinates even if the satellite lock momentarily
-// drops or the user's permission state flips. Returns a cleanup fn.
-export function startGeoWatch(): () => void {
+// fresh *high-accuracy* fix to localStorage. We refuse to overwrite a
+// good cached fix with a worse one, so a temporary Wi-Fi-only fallback
+// can't poison the cache. Optional `onFix` fires for *every* update
+// (including poor ones) so the UI can show real-time accuracy state.
+export function startGeoWatch(onFix?: (fix: Fix) => void): () => void {
   if (typeof navigator === "undefined" || !navigator.geolocation) return () => {};
   const id = navigator.geolocation.watchPosition(
     (pos) => {
-      writeLastKnownPos({
+      const fix: Fix = {
         latitude: pos.coords.latitude,
         longitude: pos.coords.longitude,
-        ts: Date.now(),
-      });
+        accuracy: pos.coords.accuracy,
+      };
+      if (onFix) onFix(fix);
+      if (fix.accuracy > CACHE_MAX_ACCURACY_M) return;
+      const prev = readLastKnownPos();
+      // Only overwrite a recent cached fix if the new one is at least as
+      // accurate. Stale prev gets replaced regardless.
+      const prevIsFresh = prev && Date.now() - prev.ts < 60_000;
+      if (prevIsFresh && prev.accuracy < fix.accuracy) return;
+      writeLastKnownPos({ ...fix, ts: Date.now() });
     },
     () => {
       /* permission errors handled elsewhere via permissions API */
     },
-    { enableHighAccuracy: true, maximumAge: 30_000, timeout: 30_000 }
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 30_000 }
   );
   return () => {
     try {
@@ -173,14 +199,19 @@ export function startGeoWatch(): () => void {
   };
 }
 
-// Best-effort coords for a panic: try a fresh-or-recent fix first, then
-// fall back to whatever we cached during the live watch.
-export async function bestPanicCoords(): Promise<
-  { latitude: number; longitude: number } | null
-> {
-  const live = await getQuickPosition(5000, 5 * 60_000);
-  if (live) return live;
-  return readLastKnownPos();
+// Best-effort coords for a panic: try for a fresh sub-50m GPS fix, then
+// fall back to whatever the live watch cached. We *prefer* the cached
+// fix when the live one is dramatically less accurate (e.g. live just
+// returned Wi-Fi triangulation with a 2km radius while the watch had
+// captured a real 30m GPS lock minutes ago).
+export async function bestPanicCoords(): Promise<Fix | null> {
+  const live = await getBestPosition(7000, 50);
+  const cached = readLastKnownPos();
+  const cachedFix: Fix | null = cached
+    ? { latitude: cached.latitude, longitude: cached.longitude, accuracy: cached.accuracy }
+    : null;
+  if (live && (!cachedFix || live.accuracy <= cachedFix.accuracy)) return live;
+  return cachedFix ?? live;
 }
 
 // Extract a human-readable message from anything `throw`n. Handles native
