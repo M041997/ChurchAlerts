@@ -87,6 +87,9 @@ export default function ChurchChatPage() {
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
+  // IDs of messages that just arrived via realtime — used to flash a
+  // highlight ring for ~3.5s. Senders' own messages are excluded.
+  const [highlightIds, setHighlightIds] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -271,16 +274,16 @@ export default function ChurchChatPage() {
             if (prev.some((m) => m.id === row.id)) return prev;
             const ownMessage =
               state.kind === "ready" && row.sender_id === state.userId;
+            const canNotify =
+              !ownMessage &&
+              typeof window !== "undefined" &&
+              "Notification" in window &&
+              Notification.permission === "granted";
             if (row.is_alert) {
               const tone = alertTone(row.message);
               if (tone === "standdown") play(allClearUrl());
               else play(sirenUrl());
-              if (
-                !ownMessage &&
-                typeof window !== "undefined" &&
-                "Notification" in window &&
-                Notification.permission === "granted"
-              ) {
+              if (canNotify) {
                 try {
                   const prefix =
                     tone === "panic"
@@ -298,8 +301,34 @@ export default function ChurchChatPage() {
                   /* notification API rejected — push fallback covers it */
                 }
               }
-            } else if (!ownMessage && !chatMutedRef.current) {
-              play(chatPingUrl());
+            } else if (!ownMessage) {
+              if (!chatMutedRef.current) play(chatPingUrl());
+              if (canNotify) {
+                try {
+                  new Notification(`💬 ${row.sender_name}`, {
+                    body: row.message,
+                    icon: "/icon-192.png",
+                    tag: `chat-${row.id}`,
+                  });
+                } catch {
+                  /* notification API rejected — push fallback covers it */
+                }
+              }
+            }
+            if (!ownMessage) {
+              setHighlightIds((s) => {
+                const next = new Set(s);
+                next.add(row.id);
+                return next;
+              });
+              window.setTimeout(() => {
+                setHighlightIds((s) => {
+                  if (!s.has(row.id)) return s;
+                  const next = new Set(s);
+                  next.delete(row.id);
+                  return next;
+                });
+              }, 3500);
             }
             return [row, ...prev];
           });
@@ -362,7 +391,7 @@ export default function ChurchChatPage() {
         window.alert(`Could not send: ${error.message}`);
         return false;
       }
-      if (inserted && opts.isAlert) {
+      if (inserted) {
         fanoutPush(inserted as Record<string, unknown>);
       }
       if (opts.attachGps && !coords) {
@@ -930,7 +959,11 @@ export default function ChurchChatPage() {
             <button
               type="submit"
               disabled={sending || !draft.trim()}
-              className="flex-1 rounded bg-neutral-800 px-3 py-2 text-sm font-medium text-neutral-100 disabled:opacity-50"
+              className={`flex-1 rounded px-3 py-2 text-sm font-medium text-neutral-100 transition-colors disabled:opacity-50 ${
+                draft.trim()
+                  ? "bg-emerald-600 shadow-[0_0_0_1px_rgba(16,185,129,0.5)]"
+                  : "bg-neutral-800"
+              }`}
             >
               {sending ? "Sending…" : "Send"}
             </button>
@@ -1001,6 +1034,10 @@ export default function ChurchChatPage() {
                     ? "rounded border border-red-700/60 bg-red-950/40 p-3"
                     : "rounded border border-emerald-700/50 bg-emerald-950/30 p-3"
                   : "rounded border border-neutral-800 bg-neutral-900 p-3";
+                const isNew = highlightIds.has(m.id);
+                const highlightClass = isNew
+                  ? " ring-2 ring-emerald-400/70 shadow-lg shadow-emerald-500/20 transition-shadow duration-700"
+                  : " transition-shadow duration-700";
                 const teamLabel = m.team_slug
                   ? churchTeams.find((t) => t.slug === m.team_slug)?.name ??
                     m.team_slug
@@ -1014,7 +1051,10 @@ export default function ChurchChatPage() {
                   .map((s) => churchTeams.find((t) => t.slug === s)?.name)
                   .filter((n): n is string => Boolean(n));
                 return (
-                  <li key={m.id} className={`flex flex-col ${cardClass}`}>
+                  <li
+                    key={m.id}
+                    className={`flex flex-col ${cardClass}${highlightClass}`}
+                  >
                     <div className="flex flex-wrap items-center gap-x-2 gap-y-0.5">
                       <span className="text-sm font-medium text-neutral-100">
                         {tone === "panic" ? "🚨 " : ""}

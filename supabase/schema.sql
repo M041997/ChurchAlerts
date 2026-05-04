@@ -384,6 +384,7 @@ set search_path = public, auth
 as $$
 begin
   insert into public.church_teams (church_id, slug, name, sort_order) values
+    (p_church_id, 'pastors', 'Pastors', 5),
     (p_church_id, 'worship', 'Worship', 10),
     (p_church_id, 'ushers', 'Ushers', 20),
     (p_church_id, 'greeters', 'Greeters', 30),
@@ -624,3 +625,9 @@ begin
     end if;
   end loop;
 end $$;
+
+-- Backfill: ensure every church has a "Pastors" team. Idempotent —
+-- existing pastors rows are preserved via the on-conflict guard.
+insert into public.church_teams (church_id, slug, name, sort_order)
+select id, 'pastors', 'Pastors', 5 from public.churches
+on conflict (church_id, slug) do nothing;

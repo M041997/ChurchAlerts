@@ -43,6 +43,7 @@ export type Location = {
 // chat reads each church's *own* church_teams / church_locations rows
 // at runtime — these arrays are never the source of truth in the UI.
 export const DEFAULT_TEAMS: Team[] = [
+  { slug: "pastors", name: "Pastors", sort_order: 5 },
   { slug: "worship", name: "Worship", sort_order: 10 },
   { slug: "ushers", name: "Ushers", sort_order: 20 },
   { slug: "greeters", name: "Greeters", sort_order: 30 },

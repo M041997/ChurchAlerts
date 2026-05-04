@@ -54,12 +54,7 @@ export async function POST(request: Request) {
     return Response.json({ skipped: "not an alert insert" });
   }
 
-  // For now, only push *alerts* (is_alert = true). Chat messages rely on realtime.
   const alert = body.record;
-  if (!alert.is_alert) {
-    return Response.json({ skipped: "regular message, no push" });
-  }
-
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
   // Pull the church's team and location names so we can render a friendly
@@ -107,13 +102,15 @@ export async function POST(request: Request) {
   const channel = alert.team_slug
     ? teamName(alert.team_slug, teams ?? [])
     : "Everyone";
-  const title = `🚨 ${alert.sender_name} · ${channel}`;
+  const titlePrefix = alert.is_alert ? "🚨" : "💬";
+  const title = `${titlePrefix} ${alert.sender_name} · ${channel}`;
   const pushBody = buildNotifBody(alert, locations ?? []);
+  const tagPrefix = alert.is_alert ? "alert" : "chat";
 
   const payload = JSON.stringify({
     title,
     body: pushBody,
-    tag: `alert-${alert.id}`,
+    tag: `${tagPrefix}-${alert.id}`,
     isPanic,
     url: "/",
   });
