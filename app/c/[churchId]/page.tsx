@@ -82,6 +82,7 @@ export default function ChurchChatPage() {
   const [inviteCopied, setInviteCopied] = useState(false);
   const [gpsBlocked, setGpsBlocked] = useState(false);
   const [chatMuted, setChatMuted] = useState(false);
+  const [fixAccuracy, setFixAccuracy] = useState<number | null>(null);
   const chatMutedRef = useRef(false);
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -124,7 +125,7 @@ export default function ChurchChatPage() {
     setPush(pushSupportInitial());
     registerServiceWorker();
     primeGeolocation();
-    const stopWatch = startGeoWatch();
+    const stopWatch = startGeoWatch((fix) => setFixAccuracy(fix.accuracy));
     if (typeof navigator !== "undefined" && navigator.permissions) {
       navigator.permissions
         .query({ name: "geolocation" as PermissionName })
@@ -728,6 +729,14 @@ export default function ChurchChatPage() {
         🚨 PANIC — CHURCH-WIDE ALERT
       </button>
 
+      {fixAccuracy != null && fixAccuracy > 200 && (
+        <p className="mx-3 mt-2 rounded border border-amber-700/40 bg-amber-950/30 px-3 py-2 text-xs text-amber-200">
+          GPS fix is ±{formatAccuracy(fixAccuracy)} — alerts may show the
+          wrong block. iPhone: Settings → this app → Location →
+          <strong> Precise Location ON</strong>, then go near a window.
+        </p>
+      )}
+
       <div className="relative mx-3 mt-3 rounded border border-neutral-800 bg-neutral-900 px-4 py-3">
         <div className="flex items-center justify-between gap-2">
           <div className="min-w-0 truncate text-sm">
@@ -1296,6 +1305,11 @@ function renderMessageWithPills(
   }
   flush();
   return out;
+}
+
+function formatAccuracy(meters: number): string {
+  if (meters >= 1000) return `${(meters / 1000).toFixed(1)}km`;
+  return `${Math.round(meters)}m`;
 }
 
 function BottomTab({
