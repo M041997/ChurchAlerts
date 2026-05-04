@@ -19,80 +19,61 @@ export const JOIN_TTL_MS = 30 * 24 * 60 * 60 * 1000;
 export const joinedTeamsKey = (churchId: string) => `church-alert:joined:${churchId}`;
 export const activeTeamKey = (churchId: string) => `church-alert:active:${churchId}`;
 
-export type TeamSlug =
-  | "worship"
-  | "ushers"
-  | "greeters"
-  | "kids"
-  | "youth"
-  | "media"
-  | "security"
-  | "hospitality"
-  | "prayer";
+// Slugs are stored as plain strings now that teams and locations are
+// configurable per-church. Use the church's loaded list to look them up
+// — there is no global "all teams in the world" set.
+export type TeamSlug = string;
+export type LocationSlug = string;
 
-export type Team = { slug: TeamSlug; name: string };
-
-export const TEAMS: Team[] = [
-  { slug: "worship", name: "Worship" },
-  { slug: "ushers", name: "Ushers" },
-  { slug: "greeters", name: "Greeters" },
-  { slug: "kids", name: "Kids" },
-  { slug: "youth", name: "Youth" },
-  { slug: "media", name: "Media / AV" },
-  { slug: "security", name: "Security" },
-  { slug: "hospitality", name: "Hospitality" },
-  { slug: "prayer", name: "Prayer" },
-];
-
-const TEAM_SLUGS = new Set<TeamSlug>(TEAMS.map((t) => t.slug));
-
-export function teamBySlug(slug: TeamSlug): Team {
-  const t = TEAMS.find((x) => x.slug === slug);
-  if (!t) throw new Error(`Unknown team slug: ${slug}`);
-  return t;
-}
-
-export function isTeamSlug(v: unknown): v is TeamSlug {
-  return typeof v === "string" && TEAM_SLUGS.has(v as TeamSlug);
-}
-
-export type LocationSlug =
-  | "main_sanctuary"
-  | "main_sanctuary_entrance"
-  | "kd_ellis_hall"
-  | "kids_sanctuary"
-  | "parking_lot_front"
-  | "parking_lot_back";
+export type Team = {
+  slug: TeamSlug;
+  name: string;
+  sort_order?: number;
+};
 
 export type Location = {
   slug: LocationSlug;
   name: string;
-  // Optional anchor coords. Used to pick the nearest location when an alert
-  // includes GPS but no explicit @-tag. Placeholder values for the demo
-  // church — survey and replace with real points before scaling.
-  latitude?: number;
-  longitude?: number;
+  latitude?: number | null;
+  longitude?: number | null;
+  sort_order?: number;
 };
 
-export const LOCATIONS: Location[] = [
-  { slug: "main_sanctuary", name: "Main Sanctuary", latitude: 29.6794, longitude: -95.3940 },
-  { slug: "main_sanctuary_entrance", name: "Main Sanctuary Entrance", latitude: 29.67945, longitude: -95.39395 },
-  { slug: "kd_ellis_hall", name: "KD Ellis Hall", latitude: 29.6793, longitude: -95.39405 },
-  { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.67945, longitude: -95.39415 },
-  { slug: "parking_lot_front", name: "Parking Lot Front", latitude: 29.6796, longitude: -95.3940 },
-  { slug: "parking_lot_back", name: "Parking Lot Back", latitude: 29.6792, longitude: -95.3940 },
+// Default seed list used when create_church is called server-side. The
+// chat reads each church's *own* church_teams / church_locations rows
+// at runtime — these arrays are never the source of truth in the UI.
+export const DEFAULT_TEAMS: Team[] = [
+  { slug: "pastors", name: "Pastors", sort_order: 5 },
+  { slug: "worship", name: "Worship", sort_order: 10 },
+  { slug: "ushers", name: "Ushers", sort_order: 20 },
+  { slug: "greeters", name: "Greeters", sort_order: 30 },
+  { slug: "kids", name: "Kids", sort_order: 40 },
+  { slug: "youth", name: "Youth", sort_order: 50 },
+  { slug: "media", name: "Media / AV", sort_order: 60 },
+  { slug: "security", name: "Security", sort_order: 70 },
+  { slug: "hospitality", name: "Hospitality", sort_order: 80 },
+  { slug: "prayer", name: "Prayer", sort_order: 90 },
 ];
 
-const LOCATION_SLUGS = new Set<LocationSlug>(LOCATIONS.map((l) => l.slug));
+export const DEFAULT_LOCATIONS: Location[] = [
+  { slug: "main_sanctuary", name: "Main Sanctuary", sort_order: 10 },
+  { slug: "main_sanctuary_entrance", name: "Main Sanctuary Entrance", sort_order: 20 },
+  { slug: "fellowship_hall", name: "Fellowship Hall", sort_order: 30 },
+  { slug: "kids_sanctuary", name: "Kids Sanctuary", sort_order: 40 },
+  { slug: "parking_lot_front", name: "Parking Lot Front", sort_order: 50 },
+  { slug: "parking_lot_back", name: "Parking Lot Back", sort_order: 60 },
+];
 
-export function locationBySlug(slug: LocationSlug): Location {
-  const l = LOCATIONS.find((x) => x.slug === slug);
-  if (!l) throw new Error(`Unknown location slug: ${slug}`);
-  return l;
-}
-
-export function isLocationSlug(v: unknown): v is LocationSlug {
-  return typeof v === "string" && LOCATION_SLUGS.has(v as LocationSlug);
+// Convert a free-text label like "Main Hall" into a stable slug
+// (lowercase, underscored, alphanumerics only) for use in the
+// church_teams / church_locations primary key.
+export function slugify(name: string): string {
+  return name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "_")
+    .replace(/^_+|_+$/g, "")
+    .slice(0, 64);
 }
 
 export type Message = {

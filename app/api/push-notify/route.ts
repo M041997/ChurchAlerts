@@ -1,6 +1,7 @@
 import { createClient } from "@supabase/supabase-js";
 import webpush from "web-push";
 import { expandLocationTags, teamName } from "@/lib/utils";
+import type { Location, Team } from "@/lib/supabase";
 
 export const runtime = "nodejs";
 
@@ -8,7 +9,11 @@ const VAPID_PUBLIC = process.env.NEXT_PUBLIC_VAPID_PUBLIC_KEY;
 const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
-const SUPABASE_KEY = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// Service role key bypasses RLS — required to read every push_subscription
+// for the church when fanning out a notification.
+const SUPABASE_KEY =
+  process.env.SUPABASE_SERVICE_ROLE_KEY ??
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
 
 if (VAPID_PUBLIC && VAPID_PRIVATE && VAPID_SUBJECT) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
@@ -23,6 +28,7 @@ type AlertRow = {
   longitude: number | null;
   message: string;
   sender_name: string;
+  sender_id: string | null;
   is_alert: boolean;
   created_at: string;
 };
@@ -48,20 +54,36 @@ export async function POST(request: Request) {
     return Response.json({ skipped: "not an alert insert" });
   }
 
-  // For now, only push *alerts* (is_alert = true). Chat messages rely on realtime.
   const alert = body.record;
-  if (!alert.is_alert) {
-    return Response.json({ skipped: "regular message, no push" });
-  }
-
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-  // Find subscriptions to notify: same church, excluding sender, filtered by team membership.
+  // Pull the church's team and location names so we can render a friendly
+  // notification title/body. These are per-church configurable now so we
+  // can't read them from a hardcoded constant.
+  const [{ data: teams }, { data: locations }] = await Promise.all([
+    supabase
+      .from("church_teams")
+      .select("slug, name, sort_order")
+      .eq("church_id", alert.church_id)
+      .returns<Team[]>(),
+    supabase
+      .from("church_locations")
+      .select("slug, name, latitude, longitude, sort_order")
+      .eq("church_id", alert.church_id)
+      .returns<Location[]>(),
+  ]);
+
+  // Find subscriptions to notify: same church, excluding sender by user_id
+  // (more robust than name), filtered by team membership.
   let query = supabase
     .from("push_subscriptions")
-    .select("endpoint, p256dh, auth, sender_name, joined_teams")
-    .eq("church_id", alert.church_id)
-    .neq("sender_name", alert.sender_name);
+    .select("endpoint, p256dh, auth, sender_name, joined_teams, user_id")
+    .eq("church_id", alert.church_id);
+  if (alert.sender_id) {
+    query = query.neq("user_id", alert.sender_id);
+  } else {
+    query = query.neq("sender_name", alert.sender_name);
+  }
 
   if (alert.team_slug) {
     query = query.contains("joined_teams", [alert.team_slug]);
@@ -77,14 +99,18 @@ export async function POST(request: Request) {
   }
 
   const isPanic = alert.team_slug === null && alert.is_alert;
-  const channel = alert.team_slug ? teamName(alert.team_slug) : "Everyone";
-  const title = `🚨 ${alert.sender_name} · ${channel}`;
-  const pushBody = buildNotifBody(alert);
+  const channel = alert.team_slug
+    ? teamName(alert.team_slug, teams ?? [])
+    : "Everyone";
+  const titlePrefix = alert.is_alert ? "🚨" : "💬";
+  const title = `${titlePrefix} ${alert.sender_name} · ${channel}`;
+  const pushBody = buildNotifBody(alert, locations ?? []);
+  const tagPrefix = alert.is_alert ? "alert" : "chat";
 
   const payload = JSON.stringify({
     title,
     body: pushBody,
-    tag: `alert-${alert.id}`,
+    tag: `${tagPrefix}-${alert.id}`,
     isPanic,
     url: "/",
   });
@@ -121,8 +147,8 @@ export async function POST(request: Request) {
   return Response.json({ sent, failed, pruned: deadEndpoints.length });
 }
 
-function buildNotifBody(alert: AlertRow): string {
-  let text = expandLocationTags(alert.message);
+function buildNotifBody(alert: AlertRow, locations: Location[]): string {
+  let text = expandLocationTags(alert.message, locations);
   if (alert.latitude != null && alert.longitude != null) {
     text += ` · GPS attached`;
   }

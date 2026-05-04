@@ -7,7 +7,7 @@ import {
   nearestLocationTo,
   teamName,
 } from "./utils";
-import type { Location } from "./supabase";
+import { DEFAULT_LOCATIONS, DEFAULT_TEAMS, type Location } from "./supabase";
 
 describe("alertTone", () => {
   it("returns 'panic' for messages starting with PANIC", () => {
@@ -23,75 +23,94 @@ describe("alertTone", () => {
 
   it("returns 'beep' for everything else", () => {
     expect(alertTone("hello world")).toBe("beep");
-    expect(alertTone("a panic happened in the kids wing")).toBe("beep"); // not at start
-    expect(alertTone("astand down")).toBe("beep"); // word boundary required
+    expect(alertTone("a panic happened in the kids wing")).toBe("beep");
+    expect(alertTone("astand down")).toBe("beep");
     expect(alertTone("")).toBe("beep");
   });
 });
 
 describe("detectLocationInText", () => {
   it("returns the matching location slug", () => {
-    expect(detectLocationInText("intruder at @Kids Sanctuary")).toBe(
-      "kids_sanctuary"
-    );
-    expect(detectLocationInText("meet at @Main Sanctuary")).toBe(
-      "main_sanctuary"
-    );
-    expect(detectLocationInText("@KD Ellis Hall fire")).toBe("kd_ellis_hall");
+    expect(
+      detectLocationInText("intruder at @Kids Sanctuary", DEFAULT_LOCATIONS)
+    ).toBe("kids_sanctuary");
+    expect(
+      detectLocationInText("meet at @Main Sanctuary", DEFAULT_LOCATIONS)
+    ).toBe("main_sanctuary");
+    expect(
+      detectLocationInText("@Fellowship Hall fire", DEFAULT_LOCATIONS)
+    ).toBe("fellowship_hall");
   });
 
   it("is case-insensitive", () => {
-    expect(detectLocationInText("@kids sanctuary now")).toBe("kids_sanctuary");
-    expect(detectLocationInText("@MAIN SANCTUARY")).toBe("main_sanctuary");
-    expect(detectLocationInText("Help @Parking Lot Front")).toBe(
-      "parking_lot_front"
+    expect(
+      detectLocationInText("@kids sanctuary now", DEFAULT_LOCATIONS)
+    ).toBe("kids_sanctuary");
+    expect(detectLocationInText("@MAIN SANCTUARY", DEFAULT_LOCATIONS)).toBe(
+      "main_sanctuary"
     );
+    expect(
+      detectLocationInText("Help @Parking Lot Front", DEFAULT_LOCATIONS)
+    ).toBe("parking_lot_front");
   });
 
   it("returns null when no @-tag matches a known location", () => {
-    expect(detectLocationInText("just a message")).toBe(null);
-    expect(detectLocationInText("@somewhere else")).toBe(null);
-    expect(detectLocationInText("")).toBe(null);
+    expect(detectLocationInText("just a message", DEFAULT_LOCATIONS)).toBe(null);
+    expect(detectLocationInText("@somewhere else", DEFAULT_LOCATIONS)).toBe(
+      null
+    );
+    expect(detectLocationInText("", DEFAULT_LOCATIONS)).toBe(null);
   });
 
   it("requires the full canonical name (no smashed-together typos)", () => {
-    expect(detectLocationInText("@KidsSanctuary")).toBe(null);
+    expect(detectLocationInText("@KidsSanctuary", DEFAULT_LOCATIONS)).toBe(
+      null
+    );
   });
 
-  it("returns the first match in iteration order when multiple are present", () => {
-    // LOCATIONS order: main_sanctuary first, then main_sanctuary_entrance, then kd_ellis_hall...
+  it("matches longer names first so 'Main Sanctuary Entrance' wins over 'Main Sanctuary'", () => {
     expect(
-      detectLocationInText("@KD Ellis Hall and @Main Sanctuary")
-    ).toBe("main_sanctuary");
+      detectLocationInText(
+        "intruder at @Main Sanctuary Entrance",
+        DEFAULT_LOCATIONS
+      )
+    ).toBe("main_sanctuary_entrance");
   });
 });
 
 describe("expandLocationTags", () => {
   it("replaces a single @-tag with the 📍 pin form", () => {
-    expect(expandLocationTags("intruder at @Kids Sanctuary")).toBe(
-      "intruder at 📍 Kids Sanctuary"
-    );
+    expect(
+      expandLocationTags("intruder at @Kids Sanctuary", DEFAULT_LOCATIONS)
+    ).toBe("intruder at 📍 Kids Sanctuary");
   });
 
   it("replaces multiple @-tags in one message", () => {
     expect(
-      expandLocationTags("@Main Sanctuary and @KD Ellis Hall both clear")
-    ).toBe("📍 Main Sanctuary and 📍 KD Ellis Hall both clear");
+      expandLocationTags(
+        "@Main Sanctuary and @Fellowship Hall both clear",
+        DEFAULT_LOCATIONS
+      )
+    ).toBe("📍 Main Sanctuary and 📍 Fellowship Hall both clear");
   });
 
   it("normalizes case to canonical name", () => {
-    expect(expandLocationTags("meet at @main sanctuary")).toBe(
-      "meet at 📍 Main Sanctuary"
-    );
-    expect(expandLocationTags("@PARKING LOT BACK now")).toBe(
+    expect(
+      expandLocationTags("meet at @main sanctuary", DEFAULT_LOCATIONS)
+    ).toBe("meet at 📍 Main Sanctuary");
+    expect(expandLocationTags("@PARKING LOT BACK now", DEFAULT_LOCATIONS)).toBe(
       "📍 Parking Lot Back now"
     );
   });
 
   it("leaves text unchanged when no tags match", () => {
-    expect(expandLocationTags("just a message")).toBe("just a message");
-    expect(expandLocationTags("")).toBe("");
-    expect(expandLocationTags("@unknown place")).toBe("@unknown place");
+    expect(expandLocationTags("just a message", DEFAULT_LOCATIONS)).toBe(
+      "just a message"
+    );
+    expect(expandLocationTags("", DEFAULT_LOCATIONS)).toBe("");
+    expect(expandLocationTags("@unknown place", DEFAULT_LOCATIONS)).toBe(
+      "@unknown place"
+    );
   });
 });
 
@@ -125,39 +144,29 @@ describe("formatTimestamp", () => {
 });
 
 describe("nearestLocationTo", () => {
-  // Tight cluster (~110m apart) at Houston-ish latitude so the meters
-  // conversion behaves like in production. With a generous radius the
-  // ranking should still be deterministic.
   const fixture: Location[] = [
-    { slug: "main_sanctuary", name: "Main Sanctuary", latitude: 29.6794, longitude: -95.3940 },
-    { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.6804, longitude: -95.3940 },
-    { slug: "kd_ellis_hall", name: "KD Ellis Hall", latitude: 29.6784, longitude: -95.3940 },
+    { slug: "main_sanctuary", name: "Main Sanctuary", latitude: 29.6794, longitude: -95.394 },
+    { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.6804, longitude: -95.394 },
+    { slug: "fellowship_hall", name: "Fellowship Hall", latitude: 29.6784, longitude: -95.394 },
   ];
 
   it("picks the closest location within the radius", () => {
-    expect(nearestLocationTo(29.67945, -95.3940, fixture, 500)).toBe(
+    expect(nearestLocationTo(29.67945, -95.394, fixture, 500)).toBe(
       "main_sanctuary"
     );
-    expect(nearestLocationTo(29.6803, -95.3940, fixture, 500)).toBe(
+    expect(nearestLocationTo(29.6803, -95.394, fixture, 500)).toBe(
       "kids_sanctuary"
     );
-    expect(nearestLocationTo(29.6785, -95.3940, fixture, 500)).toBe(
-      "kd_ellis_hall"
+    expect(nearestLocationTo(29.6785, -95.394, fixture, 500)).toBe(
+      "fellowship_hall"
     );
   });
 
   it("returns null when sender is far beyond every location's radius", () => {
-    // Baton Rouge is ~400 km from the Houston fixture — must be null
-    // regardless of which location is technically least-far. Regression
-    // for desktop senders whose Wi-Fi/IP geolocation lands hundreds of
-    // miles from the church.
     expect(nearestLocationTo(30.6447, -91.1794, fixture)).toBe(null);
-    // Same point against the real LOCATIONS array.
-    expect(nearestLocationTo(30.6447, -91.1794)).toBe(null);
   });
 
   it("respects the maxMeters bound", () => {
-    // ~1066m north of kids_sanctuary (the nearest fixture point at this lat).
     expect(nearestLocationTo(29.69, -95.394, fixture, 500)).toBe(null);
     expect(nearestLocationTo(29.69, -95.394, fixture, 1500)).toBe(
       "kids_sanctuary"
@@ -166,10 +175,10 @@ describe("nearestLocationTo", () => {
 
   it("ignores locations without coords", () => {
     const mixed: Location[] = [
-      { slug: "main_sanctuary", name: "Main Sanctuary" }, // no coords
-      { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.6794, longitude: -95.3940 },
+      { slug: "main_sanctuary", name: "Main Sanctuary" },
+      { slug: "kids_sanctuary", name: "Kids Sanctuary", latitude: 29.6794, longitude: -95.394 },
     ];
-    expect(nearestLocationTo(29.6794, -95.3940, mixed)).toBe("kids_sanctuary");
+    expect(nearestLocationTo(29.6794, -95.394, mixed)).toBe("kids_sanctuary");
   });
 
   it("returns null when no location has coords", () => {
@@ -179,20 +188,15 @@ describe("nearestLocationTo", () => {
     ];
     expect(nearestLocationTo(0, 0, noCoords)).toBe(null);
   });
-
-  it("works against the real LOCATIONS array at the church", () => {
-    const slug = nearestLocationTo(29.679415, -95.3939551);
-    expect(slug).not.toBe(null);
-  });
 });
 
 describe("teamName", () => {
   it("returns the canonical name for a known slug", () => {
-    expect(teamName("worship")).toBe("Worship");
-    expect(teamName("media")).toBe("Media / AV");
+    expect(teamName("worship", DEFAULT_TEAMS)).toBe("Worship");
+    expect(teamName("media", DEFAULT_TEAMS)).toBe("Media / AV");
   });
 
   it("returns the slug back when unknown (defensive fallback)", () => {
-    expect(teamName("unknown_team")).toBe("unknown_team");
+    expect(teamName("unknown_team", DEFAULT_TEAMS)).toBe("unknown_team");
   });
 });
