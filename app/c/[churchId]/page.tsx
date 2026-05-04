@@ -67,6 +67,7 @@ export default function ChurchChatPage() {
   const [memberTeams, setMemberTeams] = useState<Record<string, TeamSlug[]>>(
     {}
   );
+  const [memberNames, setMemberNames] = useState<Record<string, string>>({});
   const [churchTeams, setChurchTeams] = useState<Team[]>([]);
   const [churchLocations, setChurchLocations] = useState<Location[]>([]);
   const [activeTeamIdx, setActiveTeamIdx] = useState(0);
@@ -213,17 +214,28 @@ export default function ChurchChatPage() {
 
       const { data: allMembers } = await supabase
         .from("church_members")
-        .select("user_id, joined_teams")
+        .select("user_id, joined_teams, profiles(display_name)")
         .eq("church_id", churchId)
-        .returns<{ user_id: string; joined_teams: string[] | null }[]>();
+        .returns<
+          {
+            user_id: string;
+            joined_teams: string[] | null;
+            profiles: { display_name: string } | null;
+          }[]
+        >();
       if (cancelled) return;
       const teamsByUser: Record<string, TeamSlug[]> = {};
+      const namesByUser: Record<string, string> = {};
       for (const row of allMembers ?? []) {
         teamsByUser[row.user_id] = (row.joined_teams ?? []).filter((s) =>
           teamSlugs.has(s)
         );
+        if (row.profiles?.display_name) {
+          namesByUser[row.user_id] = row.profiles.display_name;
+        }
       }
       setMemberTeams(teamsByUser);
+      setMemberNames(namesByUser);
 
       const { data: existing } = await supabase
         .from("alerts")
@@ -609,6 +621,26 @@ export default function ChurchChatPage() {
     setPickerOpen(true);
   }, []);
 
+  const pickName = useCallback((name: string) => {
+    const el = inputRef.current;
+    if (!el) return;
+    const cursor = el.selectionStart ?? 0;
+    const before = el.value.slice(0, cursor);
+    const atIdx = before.lastIndexOf("@");
+    if (atIdx === -1) return;
+    const replacement = `@${name} `;
+    const after = el.value.slice(cursor);
+    const next = el.value.slice(0, atIdx) + replacement + after;
+    const newCursor = atIdx + replacement.length;
+    setDraft(next);
+    setPickerOpen(false);
+    requestAnimationFrame(() => {
+      if (!inputRef.current) return;
+      inputRef.current.focus();
+      inputRef.current.setSelectionRange(newCursor, newCursor);
+    });
+  }, []);
+
   const pickLocation = useCallback(
     (slug: LocationSlug) => {
       const el = inputRef.current;
@@ -690,6 +722,32 @@ export default function ChurchChatPage() {
             : false
     );
   }, [messages, viewMode, activeTeam]);
+
+  const myUserId = state.kind === "ready" ? state.userId : null;
+  const teammates = useMemo(() => {
+    if (!myUserId || joinedTeams.length === 0) return [];
+    const myTeams = new Set(joinedTeams);
+    return Object.entries(memberTeams)
+      .filter(
+        ([uid, teams]) =>
+          uid !== myUserId && teams.some((t) => myTeams.has(t))
+      )
+      .map(([uid]) => ({ id: uid, displayName: memberNames[uid] ?? "" }))
+      .filter((m) => m.displayName)
+      .sort((a, b) => a.displayName.localeCompare(b.displayName));
+  }, [memberTeams, memberNames, joinedTeams, myUserId]);
+
+  // For pill rendering on receipt — we need every member's name even if
+  // we don't share a team with them, so an "@John" from someone else's
+  // team still renders as a pill on our screen.
+  const allMembers = useMemo(
+    () =>
+      Object.entries(memberNames).map(([id, displayName]) => ({
+        id,
+        displayName,
+      })),
+    [memberNames]
+  );
 
   if (state.kind === "loading") {
     return (
@@ -968,21 +1026,50 @@ export default function ChurchChatPage() {
               onBlur={() =>
                 setTimeout(() => setPickerOpen(false), 100)
               }
-              placeholder={`Message ${channelLabel}… (type @ to tag a location)`}
+              placeholder={`Message ${channelLabel}… (type @ to tag a teammate or location)`}
               rows={2}
               className="block w-full resize-none bg-transparent text-base text-neutral-100 placeholder:text-neutral-500 focus:outline-none"
             />
             {pickerOpen &&
               (() => {
                 const q = pickerQuery.toLowerCase();
-                const filtered = churchLocations.filter(
+                const filteredPeople = teammates.filter(
+                  (p) => q === "" || p.displayName.toLowerCase().includes(q)
+                );
+                const filteredLocs = churchLocations.filter(
                   (l) => q === "" || l.name.toLowerCase().includes(q)
                 );
-                if (filtered.length === 0) return null;
+                if (filteredPeople.length === 0 && filteredLocs.length === 0)
+                  return null;
                 return (
-                  <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-48 overflow-y-auto rounded border border-neutral-700 bg-neutral-900 shadow-lg">
-                    {filtered.map((l) => (
-                      <li key={l.slug}>
+                  <ul className="absolute left-0 right-0 top-full z-20 mt-1 max-h-60 overflow-y-auto rounded border border-neutral-700 bg-neutral-900 shadow-lg">
+                    {filteredPeople.length > 0 && (
+                      <li className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+                        People on your teams
+                      </li>
+                    )}
+                    {filteredPeople.map((p) => (
+                      <li key={`p-${p.id}`}>
+                        <button
+                          type="button"
+                          onMouseDown={(e) => {
+                            e.preventDefault();
+                            pickName(p.displayName);
+                          }}
+                          className="flex w-full items-center gap-2 px-3 py-2 text-left text-sm text-neutral-100 hover:bg-neutral-800"
+                        >
+                          <span>👤</span>
+                          {p.displayName}
+                        </button>
+                      </li>
+                    ))}
+                    {filteredLocs.length > 0 && (
+                      <li className="px-3 pt-2 pb-1 text-[10px] font-semibold uppercase tracking-wide text-neutral-500">
+                        Locations
+                      </li>
+                    )}
+                    {filteredLocs.map((l) => (
+                      <li key={`l-${l.slug}`}>
                         <button
                           type="button"
                           onMouseDown={(e) => {
@@ -1155,7 +1242,11 @@ export default function ChurchChatPage() {
                             : "text-neutral-200"
                       }`}
                     >
-                      {renderMessageWithPills(m.message, churchLocations)}
+                      {renderMessageWithPills(
+                        m.message,
+                        churchLocations,
+                        allMembers
+                      )}
                     </p>
                     {m.latitude != null && m.longitude != null && (
                       <div className="mt-2 flex flex-col gap-1">
@@ -1261,16 +1352,24 @@ export default function ChurchChatPage() {
   );
 }
 
-// Replace every @LocationName token (case-insensitive, full canonical name)
-// with a styled inline pill. Plain text segments between pills are kept
-// verbatim so whitespace and punctuation render unchanged.
+// Replace every @LocationName / @MemberName token (case-insensitive,
+// full canonical name) with a styled inline pill. Longer names match
+// first so "@Main Sanctuary Entrance" doesn't get truncated to
+// "@Main Sanctuary".
+type Mentionable =
+  | { kind: "loc"; name: string }
+  | { kind: "person"; name: string };
+
 function renderMessageWithPills(
   text: string,
-  locations: Location[]
+  locations: Location[],
+  members: { displayName: string }[]
 ): React.ReactNode[] {
-  const sorted = [...locations].sort(
-    (a, b) => b.name.length - a.name.length
-  );
+  const items: Mentionable[] = [
+    ...locations.map((l) => ({ kind: "loc" as const, name: l.name })),
+    ...members.map((m) => ({ kind: "person" as const, name: m.displayName })),
+  ];
+  const sorted = items.sort((a, b) => b.name.length - a.name.length);
   const out: React.ReactNode[] = [];
   let i = 0;
   let buffer = "";
@@ -1283,17 +1382,21 @@ function renderMessageWithPills(
   while (i < text.length) {
     if (text[i] === "@") {
       const remaining = text.slice(i + 1).toLowerCase();
-      const match = sorted.find((l) =>
-        remaining.startsWith(l.name.toLowerCase())
+      const match = sorted.find((m) =>
+        remaining.startsWith(m.name.toLowerCase())
       );
       if (match) {
         flush();
         out.push(
           <span
             key={`p${out.length}`}
-            className="inline-flex items-baseline gap-0.5 rounded bg-sky-900/40 px-1.5 py-0.5 align-baseline text-xs font-medium text-sky-200"
+            className={
+              match.kind === "loc"
+                ? "inline-flex items-baseline gap-0.5 rounded bg-sky-900/40 px-1.5 py-0.5 align-baseline text-xs font-medium text-sky-200"
+                : "inline-flex items-baseline gap-0.5 rounded bg-violet-900/40 px-1.5 py-0.5 align-baseline text-xs font-medium text-violet-200"
+            }
           >
-            📍 {match.name}
+            {match.kind === "loc" ? `📍 ${match.name}` : `@${match.name}`}
           </span>
         );
         i += 1 + match.name.length;
