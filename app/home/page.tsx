@@ -25,8 +25,6 @@ export default function HomePage() {
   const [profile, setProfile] = useState<Profile | null>(null);
   const [memberships, setMemberships] = useState<Membership[]>([]);
   const [loading, setLoading] = useState(true);
-  const [creating, setCreating] = useState(false);
-  const [newChurchName, setNewChurchName] = useState("");
   const [mintedInvite, setMintedInvite] = useState<{
     churchId: string;
     url: string;
@@ -41,15 +39,25 @@ export default function HomePage() {
   );
 
   const refresh = useCallback(async () => {
+    const { data: authData } = await supabase.auth.getUser();
+    const uid = authData.user?.id;
+    if (!uid) {
+      setProfile(null);
+      setMemberships([]);
+      return;
+    }
+
     const { data: prof } = await supabase
       .from("profiles")
       .select("id, display_name")
+      .eq("id", uid)
       .maybeSingle<Profile>();
     setProfile(prof ?? null);
 
     const { data: mems } = await supabase
       .from("church_members")
       .select("church_id, role, churches(id, name)")
+      .eq("user_id", uid)
       .returns<Membership[]>();
     setMemberships(mems ?? []);
   }, []);
@@ -136,26 +144,6 @@ export default function HomePage() {
     router.replace("/login");
   }
 
-  async function handleCreateChurch(e: React.FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setCreating(true);
-    try {
-      const trimmed = newChurchName.trim();
-      if (!trimmed) throw new Error("Church name required");
-      const { error: rpcErr } = await supabase.rpc("create_church", {
-        church_name: trimmed,
-      });
-      if (rpcErr) throw rpcErr;
-      setNewChurchName("");
-      await refresh();
-    } catch (err) {
-      setError(errorMessage(err));
-    } finally {
-      setCreating(false);
-    }
-  }
-
   async function handleMintInvite(churchId: string) {
     setError(null);
     setMintedInvite(null);
@@ -200,8 +188,8 @@ export default function HomePage() {
         </h2>
         {memberships.length === 0 ? (
           <p className="text-sm text-gray-500">
-            You&apos;re not in any church yet. Create one below or use an
-            invite link.
+            You&apos;re not in any church yet. Ask an admin for an invite
+            link.
           </p>
         ) : (
           <ul className="flex flex-col gap-2">
@@ -325,28 +313,6 @@ export default function HomePage() {
             })}
           </ul>
         )}
-      </section>
-
-      <section className="flex flex-col gap-3 border-t border-gray-200 pt-6">
-        <h2 className="text-sm font-medium uppercase tracking-wide text-gray-500">
-          Create a new church
-        </h2>
-        <form onSubmit={handleCreateChurch} className="flex gap-2">
-          <input
-            className="flex-1 rounded border border-gray-300 px-3 py-2 text-base"
-            placeholder="Church name"
-            value={newChurchName}
-            onChange={(e) => setNewChurchName(e.target.value)}
-            required
-          />
-          <button
-            type="submit"
-            disabled={creating}
-            className="rounded bg-red-600 px-4 py-2 text-sm font-medium text-white disabled:opacity-50"
-          >
-            {creating ? "Creating…" : "Create"}
-          </button>
-        </form>
       </section>
 
       {error && <p className="text-sm text-red-600">{error}</p>}
