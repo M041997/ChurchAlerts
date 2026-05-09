@@ -80,6 +80,39 @@ export async function enableNotifications(args: {
   return "granted";
 }
 
+// Read the alerts_only preference for this user in this church.
+// Returns false (i.e. push every chat message) when no row exists yet.
+export async function readAlertsOnly(args: {
+  churchId: string;
+  userId: string;
+}): Promise<boolean> {
+  const { data } = await supabase
+    .from("push_subscriptions")
+    .select("alerts_only")
+    .eq("user_id", args.userId)
+    .eq("church_id", args.churchId)
+    .limit(1)
+    .maybeSingle<{ alerts_only: boolean }>();
+  return data?.alerts_only ?? false;
+}
+
+// Persist the alerts_only flag for every subscription this user has
+// against this church (typically one per device).
+export async function setAlertsOnly(args: {
+  churchId: string;
+  userId: string;
+  alertsOnly: boolean;
+}): Promise<void> {
+  await supabase
+    .from("push_subscriptions")
+    .update({
+      alerts_only: args.alertsOnly,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", args.userId)
+    .eq("church_id", args.churchId);
+}
+
 // Fire-and-forget: tell the server to fan a freshly-inserted alert out
 // to push subscribers. In production this happens automatically via a
 // Supabase database webhook; this client trigger keeps local dev usable

@@ -25,7 +25,9 @@ import {
   enableNotifications,
   fanoutPush,
   pushSupportInitial,
+  readAlertsOnly,
   registerServiceWorker,
+  setAlertsOnly,
   type PushSupport,
 } from "@/lib/push";
 
@@ -63,6 +65,8 @@ export default function ChurchChatPage() {
   const churchId = params?.churchId ?? "";
   const [state, setState] = useState<LoadState>({ kind: "loading" });
   const [messages, setMessages] = useState<Message[]>([]);
+  const [hasMoreOlder, setHasMoreOlder] = useState(false);
+  const [loadingOlder, setLoadingOlder] = useState(false);
   const [joinedTeams, setJoinedTeams] = useState<TeamSlug[]>([]);
   const [memberTeams, setMemberTeams] = useState<Record<string, TeamSlug[]>>(
     {}
@@ -76,6 +80,8 @@ export default function ChurchChatPage() {
   const [sending, setSending] = useState(false);
   const [panicSending, setPanicSending] = useState(false);
   const [push, setPush] = useState<PushSupport>("default");
+  const [alertsOnly, setAlertsOnlyState] = useState(false);
+  const [savingAlertsOnly, setSavingAlertsOnly] = useState(false);
   const [profileOpen, setProfileOpen] = useState(false);
   const [nameDraft, setNameDraft] = useState("");
   const [renaming, setRenaming] = useState(false);
@@ -237,6 +243,13 @@ export default function ChurchChatPage() {
       setMemberTeams(teamsByUser);
       setMemberNames(namesByUser);
 
+      const initialAlertsOnly = await readAlertsOnly({
+        churchId,
+        userId: userData.user.id,
+      });
+      if (cancelled) return;
+      setAlertsOnlyState(initialAlertsOnly);
+
       const { data: existing } = await supabase
         .from("alerts")
         .select(
@@ -249,6 +262,7 @@ export default function ChurchChatPage() {
       if (cancelled) return;
 
       setMessages(existing ?? []);
+      setHasMoreOlder((existing?.length ?? 0) === 200);
       setState({
         kind: "ready",
         church,
@@ -666,6 +680,51 @@ export default function ChurchChatPage() {
     []
   );
 
+  const handleLoadOlder = useCallback(async () => {
+    if (loadingOlder || !hasMoreOlder || messages.length === 0) return;
+    const oldest = messages[messages.length - 1];
+    setLoadingOlder(true);
+    try {
+      const { data: older } = await supabase
+        .from("alerts")
+        .select(
+          "id, church_id, message, sender_name, sender_id, is_alert, team_slug, location, latitude, longitude, created_at"
+        )
+        .eq("church_id", churchId)
+        .lt("created_at", oldest.created_at)
+        .order("created_at", { ascending: false })
+        .limit(200)
+        .returns<Message[]>();
+      const rows = older ?? [];
+      setMessages((prev) => [...prev, ...rows]);
+      setHasMoreOlder(rows.length === 200);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [loadingOlder, hasMoreOlder, messages, churchId]);
+
+  const handleToggleAlertsOnly = useCallback(
+    async (next: boolean) => {
+      if (state.kind !== "ready") return;
+      const prev = alertsOnly;
+      setAlertsOnlyState(next);
+      setSavingAlertsOnly(true);
+      try {
+        await setAlertsOnly({
+          churchId,
+          userId: state.userId,
+          alertsOnly: next,
+        });
+      } catch (err) {
+        setAlertsOnlyState(prev);
+        window.alert(`Couldn't save preference: ${(err as Error).message}`);
+      } finally {
+        setSavingAlertsOnly(false);
+      }
+    },
+    [state, alertsOnly, churchId]
+  );
+
   const handleDeleteMessage = useCallback(
     async (id: string) => {
       if (state.kind !== "ready" || state.role !== "owner") return;
@@ -808,8 +867,8 @@ export default function ChurchChatPage() {
               onClick={toggleMute}
               title={
                 chatMuted
-                  ? "Chat pings muted (panic siren stays on)"
-                  : "Mute chat pings"
+                  ? "Chat ping sound is off (panic siren and push notifications still fire)"
+                  : "Mute the in-app chat ping sound (push notifications are unaffected)"
               }
               className={`rounded border px-2 py-1 text-xs ${
                 chatMuted
@@ -900,6 +959,46 @@ export default function ChurchChatPage() {
                 </button>
               </div>
             </label>
+            <fieldset className="flex flex-col gap-1 text-xs text-neutral-400">
+              <legend className="mb-1">Push notifications for this church</legend>
+              <label className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  name="alerts-only"
+                  className="mt-0.5"
+                  checked={!alertsOnly}
+                  disabled={savingAlertsOnly || push !== "granted"}
+                  onChange={() => handleToggleAlertsOnly(false)}
+                />
+                <span>
+                  <span className="text-neutral-200">Every chat message</span>
+                  <span className="block text-[11px] text-neutral-500">
+                    Default. You&apos;ll feel every buzz.
+                  </span>
+                </span>
+              </label>
+              <label className="flex items-start gap-2">
+                <input
+                  type="radio"
+                  name="alerts-only"
+                  className="mt-0.5"
+                  checked={alertsOnly}
+                  disabled={savingAlertsOnly || push !== "granted"}
+                  onChange={() => handleToggleAlertsOnly(true)}
+                />
+                <span>
+                  <span className="text-neutral-200">Alerts only</span>
+                  <span className="block text-[11px] text-neutral-500">
+                    Panic, team alerts, and stand-down only.
+                  </span>
+                </span>
+              </label>
+              {push !== "granted" && (
+                <p className="mt-1 text-[11px] text-neutral-500">
+                  Tap the 🔔 in the header to enable push first.
+                </p>
+              )}
+            </fieldset>
             <Link href="/home" className="text-sm text-red-400 underline">
               ← Back to home
             </Link>
@@ -949,10 +1048,15 @@ export default function ChurchChatPage() {
           </p>
           <ol className="mt-2 list-inside list-decimal space-y-0.5 text-xs text-amber-200/80">
             <li>Settings → Privacy &amp; Security → Location Services → ON</li>
-            <li>Same screen → Safari Websites → &ldquo;While Using the App&rdquo;</li>
             <li>
-              In Safari: tap &ldquo;AA&rdquo; in the URL bar → Website Settings
-              → Location → Allow
+              <strong>Installed as an app?</strong> Scroll the same screen
+              → tap this app&apos;s name → Location → &ldquo;While Using&rdquo;
+              → toggle <strong>Precise Location ON</strong>.
+            </li>
+            <li>
+              <strong>Using Safari?</strong> Same screen → Safari Websites
+              → &ldquo;While Using&rdquo;. In Safari: tap &ldquo;AA&rdquo; →
+              Website Settings → Location → Allow.
             </li>
             <li>Close and reopen this page, then try again</li>
           </ol>
@@ -1281,6 +1385,18 @@ export default function ChurchChatPage() {
               })}
             </ul>
           )}
+          {hasMoreOlder && visible.length > 0 && (
+            <div className="mt-3 flex justify-center">
+              <button
+                type="button"
+                onClick={handleLoadOlder}
+                disabled={loadingOlder}
+                className="rounded border border-neutral-700 px-3 py-1 text-xs text-neutral-300 disabled:opacity-50"
+              >
+                {loadingOlder ? "Loading…" : "Load older messages"}
+              </button>
+            </div>
+          )}
           {(() => {
             const lastPanic = messages.find(
               (m) => m.is_alert && alertTone(m.message) === "panic"
@@ -1336,11 +1452,13 @@ export default function ChurchChatPage() {
           highlight
           unread={teamUnread}
         />
-        <BottomTab
-          active={viewMode === "join-list"}
-          label="Other teams"
-          onClick={() => setViewMode("join-list")}
-        />
+        {otherTeams.length > 0 && (
+          <BottomTab
+            active={viewMode === "join-list"}
+            label="Other teams"
+            onClick={() => setViewMode("join-list")}
+          />
+        )}
         <BottomTab
           active={viewMode === "everyone"}
           label="Everyone"
