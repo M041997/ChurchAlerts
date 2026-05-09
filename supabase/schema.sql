@@ -77,6 +77,12 @@ alter table public.push_subscriptions
   add column if not exists user_id uuid;
 -- Auth user owning this subscription. Nullable for legacy rows.
 
+alter table public.push_subscriptions
+  add column if not exists alerts_only boolean not null default false;
+-- When true, the API skips fanning out non-alert chat messages to this
+-- subscription. Lets a user mute high-volume chat without losing the
+-- emergency push channel.
+
 create table if not exists public.profiles (
   id uuid primary key references auth.users(id) on delete cascade,
   display_name text not null,

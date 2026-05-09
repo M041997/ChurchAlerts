@@ -77,7 +77,9 @@ export async function POST(request: Request) {
   // (more robust than name), filtered by team membership.
   let query = supabase
     .from("push_subscriptions")
-    .select("endpoint, p256dh, auth, sender_name, joined_teams, user_id")
+    .select(
+      "endpoint, p256dh, auth, sender_name, joined_teams, user_id, alerts_only"
+    )
     .eq("church_id", alert.church_id);
   if (alert.sender_id) {
     query = query.neq("user_id", alert.sender_id);
@@ -89,6 +91,12 @@ export async function POST(request: Request) {
     query = query.contains("joined_teams", [alert.team_slug]);
   }
   // Church-wide alerts (team_slug null) go to everyone in the church.
+
+  // Chat messages skip subscriptions that opted into "alerts only".
+  // Emergency alerts ignore this flag — they always fan out.
+  if (!alert.is_alert) {
+    query = query.eq("alerts_only", false);
+  }
 
   const { data: subs, error: subsErr } = await query;
   if (subsErr) {
