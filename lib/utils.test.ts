@@ -5,7 +5,9 @@ import {
   expandLocationTags,
   formatTimestamp,
   nearestLocationTo,
+  parseOptionalCoordinate,
   teamName,
+  validateCoordinateValue,
 } from "./utils";
 import { DEFAULT_LOCATIONS, DEFAULT_TEAMS, type Location } from "./supabase";
 
@@ -198,5 +200,32 @@ describe("teamName", () => {
 
   it("returns the slug back when unknown (defensive fallback)", () => {
     expect(teamName("unknown_team", DEFAULT_TEAMS)).toBe("unknown_team");
+  });
+});
+
+describe("coordinate validation", () => {
+  it("parses blank optional coordinates as null", () => {
+    expect(parseOptionalCoordinate("", "latitude")).toBe(null);
+    expect(parseOptionalCoordinate("  ", "longitude")).toBe(null);
+  });
+
+  it("parses valid latitude and longitude values", () => {
+    expect(parseOptionalCoordinate("29.6794", "latitude")).toBe(29.6794);
+    expect(parseOptionalCoordinate("-95.394", "longitude")).toBe(-95.394);
+  });
+
+  it("rejects non-numeric coordinates", () => {
+    expect(() => parseOptionalCoordinate("north", "latitude")).toThrow(
+      "Latitude and longitude must be numbers."
+    );
+  });
+
+  it("rejects out-of-range coordinate values", () => {
+    expect(() => validateCoordinateValue(91, "latitude")).toThrow(
+      "Latitude must be between -90 and 90."
+    );
+    expect(() => validateCoordinateValue(-181, "longitude")).toThrow(
+      "Longitude must be between -180 and 180."
+    );
   });
 });

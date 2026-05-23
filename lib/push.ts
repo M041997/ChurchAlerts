@@ -42,6 +42,7 @@ export async function enableNotifications(args: {
   churchId: string;
   userId: string;
   senderName: string;
+  joinedTeams: string[];
 }): Promise<PushSupport> {
   if (typeof window === "undefined") return "default";
   if (!("Notification" in window)) return "unsupported";
@@ -66,7 +67,7 @@ export async function enableNotifications(args: {
         church_id: args.churchId,
         user_id: args.userId,
         sender_name: args.senderName,
-        joined_teams: [],
+        joined_teams: args.joinedTeams,
         endpoint: json.endpoint,
         p256dh: json.keys.p256dh,
         auth: json.keys.auth,
@@ -78,6 +79,22 @@ export async function enableNotifications(args: {
     console.warn("push subscribe failed:", err);
   }
   return "granted";
+}
+
+export async function syncPushTeams(args: {
+  churchId: string;
+  userId: string;
+  joinedTeams: string[];
+}): Promise<void> {
+  const { error } = await supabase
+    .from("push_subscriptions")
+    .update({
+      joined_teams: args.joinedTeams,
+      updated_at: new Date().toISOString(),
+    })
+    .eq("user_id", args.userId)
+    .eq("church_id", args.churchId);
+  if (error) throw error;
 }
 
 // Read the alerts_only preference for this user in this church.
@@ -103,7 +120,7 @@ export async function setAlertsOnly(args: {
   userId: string;
   alertsOnly: boolean;
 }): Promise<void> {
-  await supabase
+  const { error } = await supabase
     .from("push_subscriptions")
     .update({
       alerts_only: args.alertsOnly,
@@ -111,6 +128,7 @@ export async function setAlertsOnly(args: {
     })
     .eq("user_id", args.userId)
     .eq("church_id", args.churchId);
+  if (error) throw error;
 }
 
 // Fire-and-forget: tell the server to fan a freshly-inserted alert out

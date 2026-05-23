@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import Link from "next/link";
 import { supabase } from "@/lib/supabase";
@@ -13,6 +13,7 @@ export default function ResetPasswordPage() {
   const [password, setPassword] = useState("");
   const [confirm, setConfirm] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const recoveredRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -24,18 +25,21 @@ export default function ResetPasswordPage() {
     const { data: sub } = supabase.auth.onAuthStateChange((event) => {
       if (cancelled) return;
       if (event === "PASSWORD_RECOVERY" || event === "SIGNED_IN") {
+        recoveredRef.current = true;
         setStatus("ready");
       }
     });
 
     supabase.auth.getSession().then(({ data }) => {
       if (cancelled) return;
-      if (data.session) setStatus("ready");
-      else {
+      if (data.session) {
+        recoveredRef.current = true;
+        setStatus("ready");
+      } else {
         // Give the hash parser a moment to fire its event before declaring
         // the link dead.
         setTimeout(() => {
-          if (!cancelled && status === "checking") setStatus("no-session");
+          if (!cancelled && !recoveredRef.current) setStatus("no-session");
         }, 1500);
       }
     });
@@ -44,7 +48,6 @@ export default function ResetPasswordPage() {
       cancelled = true;
       sub.subscription.unsubscribe();
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   async function handleSubmit(e: React.FormEvent) {

@@ -28,6 +28,7 @@ import {
   readAlertsOnly,
   registerServiceWorker,
   setAlertsOnly,
+  syncPushTeams,
   type PushSupport,
 } from "@/lib/push";
 
@@ -277,8 +278,10 @@ export default function ChurchChatPage() {
     };
   }, [churchId, router]);
 
+  const readyUserId = state.kind === "ready" ? state.userId : null;
+
   useEffect(() => {
-    if (state.kind !== "ready") return;
+    if (!readyUserId) return;
     const ch = supabase
       .channel(`chat:${churchId}`)
       .on(
@@ -307,8 +310,7 @@ export default function ChurchChatPage() {
           const row = payload.new as Message;
           setMessages((prev) => {
             if (prev.some((m) => m.id === row.id)) return prev;
-            const ownMessage =
-              state.kind === "ready" && row.sender_id === state.userId;
+            const ownMessage = row.sender_id === readyUserId;
             const canNotify =
               !ownMessage &&
               typeof window !== "undefined" &&
@@ -388,7 +390,7 @@ export default function ChurchChatPage() {
     return () => {
       supabase.removeChannel(ch);
     };
-  }, [state.kind, churchId]);
+  }, [readyUserId, churchId]);
 
   useEffect(() => {
     const el = scrollerRef.current;
@@ -509,7 +511,7 @@ export default function ChurchChatPage() {
     } finally {
       setPanicSending(false);
     }
-  }, [draft, sendTeamSlug, insertMessage]);
+  }, [draft, sendTeamSlug, churchTeams, insertMessage]);
 
   const handlePanic = useCallback(async () => {
     if (!window.confirm("Send PANIC alert to everyone in this church?"))
@@ -546,13 +548,22 @@ export default function ChurchChatPage() {
     async (next: TeamSlug[]) => {
       if (state.kind !== "ready") return;
       const { error } = await supabase
-        .from("church_members")
-        .update({ joined_teams: next })
-        .eq("user_id", state.userId)
-        .eq("church_id", churchId);
+        .rpc("update_joined_teams", {
+          p_church_id: churchId,
+          p_joined_teams: next,
+        });
       if (error) {
         window.alert(`Could not save team change: ${error.message}`);
         return;
+      }
+      try {
+        await syncPushTeams({
+          churchId,
+          userId: state.userId,
+          joinedTeams: next,
+        });
+      } catch {
+        /* push subscriptions are best-effort; membership is already saved */
       }
       setJoinedTeams(next);
       setMemberTeams((prev) => ({ ...prev, [state.userId]: next }));
@@ -677,7 +688,7 @@ export default function ChurchChatPage() {
         inputRef.current.setSelectionRange(newCursor, newCursor);
       });
     },
-    []
+    [churchLocations]
   );
 
   const handleLoadOlder = useCallback(async () => {
@@ -886,6 +897,7 @@ export default function ChurchChatPage() {
                   churchId,
                   userId: state.userId,
                   senderName: state.displayName,
+                  joinedTeams,
                 });
                 setPush(next);
               }}

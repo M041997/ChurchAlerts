@@ -316,9 +316,9 @@ create policy "profiles_co_members_select" on public.profiles
   for select to authenticated using (public.is_co_member(profiles.id));
 
 -- church_members: read your own memberships and co-members of your
--- churches. Inserts/deletes go through SECURITY DEFINER RPCs
--- (redeem_invite, create_church). Updates allowed for your own row only
--- — used to toggle joined_teams when you join or leave a team.
+-- churches. Inserts/deletes/updates go through SECURITY DEFINER RPCs
+-- (redeem_invite, create_church, update_joined_teams). Direct UPDATE
+-- is intentionally closed so members cannot self-promote by writing role.
 drop policy if exists "members_visible" on public.church_members;
 create policy "members_visible" on public.church_members
   for select to authenticated using (
@@ -326,10 +326,6 @@ create policy "members_visible" on public.church_members
   );
 
 drop policy if exists "members_self_update" on public.church_members;
-create policy "members_self_update" on public.church_members
-  for update to authenticated
-  using (user_id = auth.uid())
-  with check (user_id = auth.uid());
 
 -- Admins of a church can remove any member of that church. Used by the
 -- /home Members section. Members cannot self-delete via this policy —
@@ -338,9 +334,9 @@ drop policy if exists "members_owner_delete" on public.church_members;
 create policy "members_owner_delete" on public.church_members
   for delete to authenticated using (public.is_owner_of(church_id));
 
--- invites: owners read/write invites for their church. Anyone holding
--- the token can SELECT the row to preview the church before signing up
--- (the token itself is the secret).
+-- invites: owners read/write invites for their church. Anonymous invite
+-- preview goes through preview_invite(invite_token) so callers can only
+-- read the row matching the token they already hold.
 drop policy if exists "invites_owner_rw" on public.invites;
 create policy "invites_owner_rw" on public.invites
   for all to authenticated
@@ -348,8 +344,6 @@ create policy "invites_owner_rw" on public.invites
   with check (public.is_owner_of(invites.church_id));
 
 drop policy if exists "invites_token_preview" on public.invites;
-create policy "invites_token_preview" on public.invites
-  for select to anon, authenticated using (true);
 
 -- church_teams and church_locations: any member of the church can read
 -- (the chat needs them to render messages and the @-picker). Owners
@@ -482,6 +476,29 @@ $$;
 
 grant execute on function public.create_invite(uuid) to authenticated;
 
+-- preview_invite: token-scoped invite preview for unauthenticated users.
+create or replace function public.preview_invite(invite_token text)
+returns table (
+  token text,
+  church_id uuid,
+  redeemed_by uuid,
+  expires_at timestamptz,
+  church_name text
+)
+language sql
+security definer
+set search_path = public
+stable
+as $$
+  select i.token, i.church_id, i.redeemed_by, i.expires_at, c.name
+  from public.invites i
+  join public.churches c on c.id = i.church_id
+  where i.token = invite_token
+  limit 1;
+$$;
+
+grant execute on function public.preview_invite(text) to anon, authenticated;
+
 -- redeem_invite: caller becomes a member of the church the invite points
 -- to. Atomically marks the invite consumed.
 create or replace function public.redeem_invite(invite_token text)
@@ -529,6 +546,51 @@ end;
 $$;
 
 grant execute on function public.redeem_invite(text) to authenticated;
+
+-- update_joined_teams: members may update only their team list, never role
+-- or church ownership fields.
+create or replace function public.update_joined_teams(
+  p_church_id uuid,
+  p_joined_teams text[]
+)
+returns void
+language plpgsql
+security definer
+set search_path = public, auth
+as $$
+declare
+  v_user uuid := auth.uid();
+begin
+  if v_user is null then
+    raise exception 'not authenticated';
+  end if;
+  if not exists (
+    select 1 from public.church_members
+    where user_id = v_user and church_id = p_church_id
+  ) then
+    raise exception 'not a member of this church';
+  end if;
+
+  update public.church_members
+    set joined_teams = coalesce(
+      (
+        select array_agg(slug order by first_seen)
+        from (
+          select requested.slug, min(requested.ord) as first_seen
+          from unnest(coalesce(p_joined_teams, '{}')) with ordinality
+            as requested(slug, ord)
+          join public.church_teams t
+            on t.church_id = p_church_id and t.slug = requested.slug
+          group by requested.slug
+        ) valid
+      ),
+      '{}'
+    )
+    where user_id = v_user and church_id = p_church_id;
+end;
+$$;
+
+grant execute on function public.update_joined_teams(uuid, text[]) to authenticated;
 
 -- promote_member: admin elevates an existing member to owner. There can
 -- be more than one owner per church.

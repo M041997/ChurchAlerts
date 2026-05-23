@@ -9,7 +9,11 @@ import {
   type Team,
   type Location,
 } from "@/lib/supabase";
-import { errorMessage } from "@/lib/utils";
+import {
+  errorMessage,
+  parseOptionalCoordinate,
+  validateCoordinateValue,
+} from "@/lib/utils";
 
 type LoadState =
   | { kind: "loading" }
@@ -169,13 +173,13 @@ export default function ChurchSettingsPage() {
       setError("Name has no usable letters/digits.");
       return;
     }
-    const lat = newLocLat.trim() ? Number(newLocLat) : null;
-    const lng = newLocLng.trim() ? Number(newLocLng) : null;
-    if (
-      (lat !== null && Number.isNaN(lat)) ||
-      (lng !== null && Number.isNaN(lng))
-    ) {
-      setError("Latitude and longitude must be numbers.");
+    let lat: number | null;
+    let lng: number | null;
+    try {
+      lat = parseOptionalCoordinate(newLocLat, "latitude");
+      lng = parseOptionalCoordinate(newLocLng, "longitude");
+    } catch (err) {
+      setError(errorMessage(err));
       return;
     }
     setBusy("add-loc");
@@ -201,13 +205,23 @@ export default function ChurchSettingsPage() {
   }
 
   async function handleSaveLocation(loc: Location) {
+    setError(null);
+    let latitude: number | null;
+    let longitude: number | null;
+    try {
+      latitude = validateCoordinateValue(loc.latitude, "latitude");
+      longitude = validateCoordinateValue(loc.longitude, "longitude");
+    } catch (err) {
+      setError(errorMessage(err));
+      return;
+    }
     setBusy(`loc-${loc.slug}`);
     const { error: err } = await supabase
       .from("church_locations")
       .update({
         name: loc.name,
-        latitude: loc.latitude,
-        longitude: loc.longitude,
+        latitude,
+        longitude,
       })
       .eq("church_id", churchId)
       .eq("slug", loc.slug);

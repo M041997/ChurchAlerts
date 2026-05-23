@@ -10,6 +10,7 @@ type InviteRow = {
   church_id: string;
   redeemed_by: string | null;
   expires_at: string;
+  church_name: string;
 };
 type ChurchRow = { id: string; name: string };
 type State =
@@ -23,22 +24,24 @@ export default function JoinPage() {
   const params = useParams<{ token: string }>();
   const router = useRouter();
   const token = params?.token ?? "";
-  const [state, setState] = useState<State>({ kind: "loading" });
+  const [state, setState] = useState<State>(() =>
+    token
+      ? { kind: "loading" }
+      : { kind: "error", message: "Missing invite token" }
+  );
 
   useEffect(() => {
-    if (!token) {
-      setState({ kind: "error", message: "Missing invite token" });
-      return;
-    }
+    if (!token) return;
     let cancelled = false;
 
     (async () => {
-      const { data: invite, error: inviteErr } = await supabase
-        .from("invites")
-        .select("token, church_id, redeemed_by, expires_at")
-        .eq("token", token)
-        .maybeSingle<InviteRow>();
+      const { data: previewsRaw, error: inviteErr } = await supabase.rpc(
+        "preview_invite",
+        { invite_token: token }
+      );
       if (cancelled) return;
+      const previews = previewsRaw as InviteRow[] | null;
+      const invite = previews?.[0] ?? null;
       if (inviteErr || !invite) {
         setState({ kind: "error", message: "Invite not found" });
         return;
@@ -52,16 +55,10 @@ export default function JoinPage() {
         return;
       }
 
-      const { data: church } = await supabase
-        .from("churches")
-        .select("id, name")
-        .eq("id", invite.church_id)
-        .maybeSingle<ChurchRow>();
-      if (cancelled) return;
-      if (!church) {
-        setState({ kind: "error", message: "Church for this invite not found" });
-        return;
-      }
+      const church: ChurchRow = {
+        id: invite.church_id,
+        name: invite.church_name,
+      };
 
       const { data: session } = await supabase.auth.getSession();
       if (cancelled) return;

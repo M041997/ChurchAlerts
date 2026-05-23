@@ -260,6 +260,35 @@ export function teamName(slug: TeamSlug | string, teams: Team[]): string {
   return t ? t.name : slug;
 }
 
+export function parseOptionalCoordinate(
+  value: string,
+  kind: "latitude" | "longitude"
+): number | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    throw new Error("Latitude and longitude must be numbers.");
+  }
+  return validateCoordinateValue(parsed, kind);
+}
+
+export function validateCoordinateValue(
+  value: number | null | undefined,
+  kind: "latitude" | "longitude"
+): number | null {
+  if (value == null) return null;
+  const max = kind === "latitude" ? 90 : 180;
+  if (!Number.isFinite(value) || value < -max || value > max) {
+    throw new Error(
+      kind === "latitude"
+        ? "Latitude must be between -90 and 90."
+        : "Longitude must be between -180 and 180."
+    );
+  }
+  return value;
+}
+
 // Pick the closest known location to (lat, lng), but only if it's within
 // `maxMeters` (default 500m). Skips locations without coords. Returns null
 // when the sender is too far from any known location — that prevents an

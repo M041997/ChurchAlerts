@@ -42,6 +42,9 @@ type WebhookBody = {
 };
 
 export async function POST(request: Request) {
+  if (!isAuthorizedPushRequest(request)) {
+    return Response.json({ error: "unauthorized" }, { status: 401 });
+  }
   if (!VAPID_PUBLIC || !VAPID_PRIVATE || !VAPID_SUBJECT) {
     return Response.json({ error: "vapid not configured" }, { status: 500 });
   }
@@ -54,8 +57,20 @@ export async function POST(request: Request) {
     return Response.json({ skipped: "not an alert insert" });
   }
 
-  const alert = body.record;
   const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+  const { data: alert, error: alertErr } = await supabase
+    .from("alerts")
+    .select(
+      "id, church_id, team_slug, location, latitude, longitude, message, sender_name, sender_id, is_alert, created_at"
+    )
+    .eq("id", body.record.id)
+    .maybeSingle<AlertRow>();
+  if (alertErr) {
+    return Response.json({ error: alertErr.message }, { status: 500 });
+  }
+  if (!alert) {
+    return Response.json({ error: "alert not found" }, { status: 404 });
+  }
 
   // Pull the church's team and location names so we can render a friendly
   // notification title/body. These are per-church configurable now so we
@@ -155,7 +170,15 @@ export async function POST(request: Request) {
   return Response.json({ sent, failed, pruned: deadEndpoints.length });
 }
 
-function buildNotifBody(alert: AlertRow, locations: Location[]): string {
+export function isAuthorizedPushRequest(request: Pick<Request, "headers">): boolean {
+  const secret = process.env.PUSH_NOTIFY_SECRET;
+  if (!secret) return process.env.NODE_ENV !== "production";
+  const headerSecret = request.headers.get("x-push-secret");
+  const auth = request.headers.get("authorization");
+  return headerSecret === secret || auth === `Bearer ${secret}`;
+}
+
+export function buildNotifBody(alert: AlertRow, locations: Location[]): string {
   let text = expandLocationTags(alert.message, locations);
   if (alert.latitude != null && alert.longitude != null) {
     text += ` · GPS attached`;
