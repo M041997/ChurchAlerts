@@ -1,0 +1,35 @@
+name: Supabase keepalive
+
+on:
+  schedule:
+    # Daily at 14:17 UTC. Odd minute avoids the top-of-the-hour cron stampede
+    # on GitHub Actions (jobs get queued and may run late).
+    - cron: "17 14 * * *"
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Query Supabase REST
+        env:
+          SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+          SUPABASE_ANON_KEY: ${{ vars.SUPABASE_ANON_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL}" ] || [ -z "${SUPABASE_ANON_KEY}" ]; then
+            echo "Missing SUPABASE_URL or SUPABASE_ANON_KEY repo variable." >&2
+            exit 1
+          fi
+          status=$(curl -sS -o /tmp/body -w "%{http_code}" \
+            -H "apikey: ${SUPABASE_ANON_KEY}" \
+            -H "Authorization: Bearer ${SUPABASE_ANON_KEY}" \
+            "${SUPABASE_URL}/rest/v1/churches?select=id&limit=1")
+          echo "HTTP ${status}"
+          cat /tmp/body
+          # 200 = ok with rows, 206 = partial content (range), 401/403 = RLS blocked
+          # but the request still counted as activity. Anything 5xx means Supabase
+          # is unreachable — fail so the workflow surfaces it.
+          if [ "${status}" -ge 500 ]; then
+            exit 1
+          fi
