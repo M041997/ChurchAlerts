@@ -2,7 +2,7 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { supabase } from "@/lib/supabase";
+import { hasSupabaseConfig, supabase } from "@/lib/supabase";
 
 export default function RootRouter() {
   const router = useRouter();
@@ -10,6 +10,10 @@ export default function RootRouter() {
   useEffect(() => {
     let cancelled = false;
     (async () => {
+      if (!hasSupabaseConfig) {
+        router.replace("/login");
+        return;
+      }
       const { data } = await supabase.auth.getSession();
       if (cancelled) return;
       router.replace(data.session ? "/home" : "/login");

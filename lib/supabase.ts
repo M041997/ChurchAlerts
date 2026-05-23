@@ -4,6 +4,8 @@ const url = process.env.NEXT_PUBLIC_SUPABASE_URL ?? "";
 const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ?? "";
 
 export const hasSupabaseConfig = Boolean(url && anonKey);
+export const supabaseConfigMessage =
+  "Supabase is not configured. In Vercel, set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY, then redeploy.";
 
 export const supabase = createClient(
   url || "https://placeholder.supabase.co",

@@ -3,7 +3,7 @@
 import { Suspense, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import Link from "next/link";
-import { supabase } from "@/lib/supabase";
+import { hasSupabaseConfig, supabase, supabaseConfigMessage } from "@/lib/supabase";
 import { errorMessage } from "@/lib/utils";
 
 function LoginForm() {
@@ -18,6 +18,10 @@ function LoginForm() {
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault();
     setError(null);
+    if (!hasSupabaseConfig) {
+      setError(supabaseConfigMessage);
+      return;
+    }
     setSubmitting(true);
     try {
       const { error: signInError } = await supabase.auth.signInWithPassword({
@@ -60,9 +64,14 @@ function LoginForm() {
           />
         </label>
         {error && <p className="text-sm text-red-600">{error}</p>}
+        {!hasSupabaseConfig && (
+          <p className="rounded border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-800">
+            {supabaseConfigMessage}
+          </p>
+        )}
         <button
           type="submit"
-          disabled={submitting}
+          disabled={submitting || !hasSupabaseConfig}
           className="rounded bg-red-600 px-4 py-2 font-medium text-white disabled:opacity-50"
         >
           {submitting ? "Logging in…" : "Log in"}
