@@ -10,10 +10,10 @@ const VAPID_PRIVATE = process.env.VAPID_PRIVATE_KEY;
 const VAPID_SUBJECT = process.env.VAPID_SUBJECT;
 const SUPABASE_URL = process.env.NEXT_PUBLIC_SUPABASE_URL;
 // Service role key bypasses RLS — required to read every push_subscription
-// for the church when fanning out a notification.
-const SUPABASE_KEY =
-  process.env.SUPABASE_SERVICE_ROLE_KEY ??
-  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
+// for the church when fanning out a notification. No anon fallback: the
+// anon role is subject to RLS and would return zero subscribers, causing
+// fanout to silently send nothing in prod.
+const SUPABASE_SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 if (VAPID_PUBLIC && VAPID_PRIVATE && VAPID_SUBJECT) {
   webpush.setVapidDetails(VAPID_SUBJECT, VAPID_PUBLIC, VAPID_PRIVATE);
@@ -48,7 +48,8 @@ export async function POST(request: Request) {
   if (!VAPID_PUBLIC || !VAPID_PRIVATE || !VAPID_SUBJECT) {
     return Response.json({ error: "vapid not configured" }, { status: 500 });
   }
-  if (!SUPABASE_URL || !SUPABASE_KEY) {
+  if (!SUPABASE_URL || !SUPABASE_SERVICE_KEY) {
+    console.error("push-notify: missing SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY");
     return Response.json({ error: "supabase not configured" }, { status: 500 });
   }
 
@@ -57,7 +58,7 @@ export async function POST(request: Request) {
     return Response.json({ skipped: "not an alert insert" });
   }
 
-  const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
+  const supabase = createClient(SUPABASE_URL, SUPABASE_SERVICE_KEY);
   const { data: alert, error: alertErr } = await supabase
     .from("alerts")
     .select(
@@ -153,6 +154,14 @@ export async function POST(request: Request) {
       } catch (err) {
         const sc = (err as { statusCode?: number }).statusCode;
         if (sc === 404 || sc === 410) deadEndpoints.push(s.endpoint);
+        // Log host + status so we can see which push services are failing
+        // without leaking the full endpoint URL (which is per-device secret-ish).
+        let host = "unknown";
+        try { host = new URL(s.endpoint).host; } catch { /* malformed url */ }
+        const msg = err instanceof Error ? err.message : String(err);
+        console.error(
+          `push-notify: alert=${alert.id} church=${alert.church_id} host=${host} status=${sc ?? "?"} msg=${msg}`
+        );
         throw err;
       }
     })
