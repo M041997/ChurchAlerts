@@ -47,3 +47,22 @@ You can check out [the Next.js GitHub repository](https://github.com/vercel/next
 The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
 
 Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+
+## iPhone TestFlight Build
+
+This repo includes a Capacitor iOS wrapper around the deployed Next.js app. Build and deploy the web app first, then point Capacitor at that HTTPS URL:
+
+```bash
+CAPACITOR_SERVER_URL=https://your-project.vercel.app npm run ios:sync
+npm run ios:open
+```
+
+In Xcode:
+
+1. Select the `App` target.
+2. Set your Apple Developer team.
+3. Change the bundle identifier if `com.churchalert.app` is not available.
+4. Set signing to automatic.
+5. Choose `Product > Archive`, then distribute the archive to App Store Connect for TestFlight.
+
+The native wrapper uses `www/index.html` only as a fallback. TestFlight builds should be synced with `CAPACITOR_SERVER_URL` set to the production deployment.

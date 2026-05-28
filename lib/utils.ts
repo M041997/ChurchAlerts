@@ -119,6 +119,22 @@ export function primeGeolocation(): void {
   );
 }
 
+export async function geolocationPermissionState(): Promise<
+  PermissionState | "unsupported"
+> {
+  if (typeof navigator === "undefined" || !navigator.geolocation)
+    return "unsupported";
+  if (!navigator.permissions) return "unsupported";
+  try {
+    const status = await navigator.permissions.query({
+      name: "geolocation" as PermissionName,
+    });
+    return status.state;
+  } catch {
+    return "unsupported";
+  }
+}
+
 const LAST_POS_KEY = "church-alert:lastPos";
 type StoredPos = {
   latitude: number;
@@ -205,6 +221,17 @@ export function startGeoWatch(onFix?: (fix: Fix) => void): () => void {
 // returned Wi-Fi triangulation with a 2km radius while the watch had
 // captured a real 30m GPS lock minutes ago).
 export async function bestPanicCoords(): Promise<Fix | null> {
+  const permission = await geolocationPermissionState();
+  if (permission !== "granted") {
+    const cached = readLastKnownPos();
+    return cached
+      ? {
+          latitude: cached.latitude,
+          longitude: cached.longitude,
+          accuracy: cached.accuracy,
+        }
+      : null;
+  }
   const live = await getBestPosition(7000, 50);
   const cached = readLastKnownPos();
   const cachedFix: Fix | null = cached

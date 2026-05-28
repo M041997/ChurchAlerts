@@ -17,6 +17,12 @@
 /.next/
 /out/
 
+# native build output
+/ios/DerivedData/
+/ios/build/
+**/xcuserdata/
+**/.swiftpm/xcode/xcuserdata/
+
 # production
 /build
 

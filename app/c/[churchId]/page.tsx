@@ -16,6 +16,7 @@ import {
   bestPanicCoords,
   detectLocationInText,
   formatTimestamp,
+  geolocationPermissionState,
   nearestLocationTo,
   primeGeolocation,
   startGeoWatch,
@@ -132,15 +133,17 @@ export default function ChurchChatPage() {
   useEffect(() => {
     setPush(pushSupportInitial());
     registerServiceWorker();
-    primeGeolocation();
-    const stopWatch = startGeoWatch((fix) => setFixAccuracy(fix.accuracy));
-    if (typeof navigator !== "undefined" && navigator.permissions) {
-      navigator.permissions
-        .query({ name: "geolocation" as PermissionName })
-        .then((p) => setGpsBlocked(p.state === "denied"))
-        .catch(() => {});
-    }
+    let stopWatch = () => {};
+    let cancelled = false;
+    geolocationPermissionState().then((state) => {
+      if (cancelled) return;
+      setGpsBlocked(state === "denied");
+      if (state !== "granted") return;
+      primeGeolocation();
+      stopWatch = startGeoWatch((fix) => setFixAccuracy(fix.accuracy));
+    });
     return () => {
+      cancelled = true;
       stopWatch();
     };
   }, []);
